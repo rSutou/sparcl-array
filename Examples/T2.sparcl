@@ -1,0 +1,18 @@
+def const a b = a
+
+def h f k = f (\x -> k x)
+    
+def h2 f k = 
+    let sig hh : Int
+        def hh = f (\x -> k x) 
+    in  hh
+
+-- No generalization as OutsideIn(X) paper.
+def h2' f k = 
+    let def hh = f (\x -> k x) 
+    in  hh : Int 
+
+def h3 f k = 
+    let sig hh : Int
+        def hh = f (\x -> k x) 
+    in (f (\x -> const 1 x), hh) 

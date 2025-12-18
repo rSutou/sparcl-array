@@ -1,0 +1,95 @@
+{-
+
+An invertible function that computes differences of two consecutive
+elements in a list (Sections 1 and 2 in our ICFP 2020 paper)
+ 
+How to Run 
+----------
+
+Load this file.
+ 
+    Sparcl> :load Examples/S2l.sparcl
+
+The function `s2l` corresponds to the function `subs` in the
+paper. One can check its behavior for example as:
+
+    Sparcl> list1
+    Cons 1 (Cons 2 (Cons 5 (Cons 2 (Cons 3 Nil))))  
+    Sparcl> fwd s2l list1
+    Cons 1 (Cons 1 (Cons 3 (Cons -3 (Cons 1 Nil))))
+    Sparcl> bwd s2l (fwd s2l list1)
+    Cons 1 (Cons 2 (Cons 5 (Cons 2 (Cons 3 Nil))))
+
+-} 
+
+
+-- Example of a parameterised datatype.
+data List a = Nil | Cons a (List a) 
+
+def fwd f = case unlift f of (x, _) -> x end 
+def bwd f = case unlift f of (_, x) -> x end 
+            
+
+def null Nil = True
+       |  _  = False 
+
+{-
+Transformations from sets of numbers (expressed as a sorted list) to lists of numbers. 
+-}
+
+
+-- sig ($) : forall a b. (a -o b) -o a -o b 
+def ($) f x = f x 
+-- NB: definition like f $ x = f x is not possible in the current version
+fixity $ 0 right 
+
+sig sub : Int -> rev Int -o rev Int 
+def sub n = lift (\x -> x - n) (\x -> x + n) 
+
+-- A function called "subs" in Sections 1 and 2 in the paper. 
+
+sig s2l : rev (List Int) -o rev (List Int) 
+def s2l = go 0 
+    where 
+      def go n (rev Nil) = rev Nil with null 
+           | n (rev Cons x xs) = 
+             let rev (x, r) <- pin x $ \x' -> go x' xs in 
+             rev Cons (sub n x) r 
+    end
+
+sig s2l'' : rev (List Int) -o rev (List Int)
+def s2l'' = go 0 
+    where 
+      def go n (rev Nil)       = rev Nil with null
+           | n (rev Cons x xs) = 
+               case pin x (\x -> go x xs) of 
+                  rev (x', r) -> rev Cons (flipsub n x') r
+               end 
+    end
+
+sig s2l' : rev (List Int) -o rev (List Int)
+def s2l' = go 0 
+  where
+    def go n (rev Nil) = rev Nil with null
+         | n (rev Cons x xs) = 
+             revdo x' <- x;
+                   r  <- go x' xs; 
+             in    rev Cons (flipsub n x') r 
+  end
+
+
+sig dec : rev Int -o rev Int 
+def dec = lift (\x -> x - 1) (\x -> x + 1)
+
+sig flipsub : Int -> rev Int -o rev Int 
+def flipsub n r = 
+   case eqInt n 0 of 
+   | True  -> r 
+   | False -> flipsub (n-1) (dec r)
+   end 
+
+def (|:) x xs = Cons x xs 
+fixity |: 5 right 
+
+def list1  = 1 |: 2 |: 5 |: 2 |: 3 |: Nil 
+def list1' = bwd s2l $ fwd s2l list1 -- this must be equal to list1

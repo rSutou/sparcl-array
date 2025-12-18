@@ -1,0 +1,16 @@
+.stack-work/
+.hlint.yaml 
+.hie
+*.prof
+*.profiterole.html
+*.profiterole.txt
+*.yaml.lock
+stan.html
+sparcl-*.zip
+t.out
+.sparcl
+*~
+dist-newstyle/
+
+notes/Typing.md
+impl_old.zip

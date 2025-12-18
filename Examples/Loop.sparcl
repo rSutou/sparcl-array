@@ -1,0 +1,144 @@
+{-
+
+An implementation of the trace operator (mentioned in Section 3.6.4 in
+our ICFP 2020 paper), and examples using the operator.
+
+How to Run 
+----------
+
+First, load this file. 
+
+    Sparcl> :load Examples/Loop.sparcl 
+
+The trace operator is implemented as `trace`. We implemented two
+functions by using `trace`: a list reversal function
+(`reverseByTrace`) and a mutual conversion between the MSB
+representation and Peano representation of natural numbers
+(`msb2nat`).
+
+    Sparcl> t0
+    Cons 1 (Cons 2 (Cons 3 Nil))
+    Sparcl> fwd reverseByTrace t0
+    Cons 3 (Cons 2 (Cons 1 Nil))
+    Sparcl> bwd reverseByTrace (fwd reverseByTrace t0)
+    Cons 1 (Cons 2 (Cons 3 Nil))
+
+    Sparcl> b6
+    Cons B1 (Cons B1 (Cons B0 Nil))
+    Sparcl> fwd msb2nat b6
+    S (S (S (S (S (S Z)))))
+    Sparcl> bwd msb2nat (fwd msb2nat b6)
+    Cons B1 (Cons B1 (Cons B0 Nil))
+
+-}
+
+data Either a b = Left a 
+                | Right b 
+
+def invert h = 
+    case unlift h of 
+      (f, g) -> lift g f 
+    end  
+
+
+def fst (a, _) = a 
+def snd (_, b) = b 
+
+def fwd h = fst (unlift h)
+
+def bwd h = snd (unlift h) 
+
+def (.) f g = \x -> f (g x)
+
+data Nat = Z | S Nat 
+
+sig isZ : Nat -> Bool 
+def isZ Z = True 
+      | _ = False 
+
+sig isLeft : Either a b -> Bool 
+def isLeft (Left _) = True 
+         | _        = False 
+
+sig unsafeNew : a -> rev a 
+def unsafeNew a = lift (\() -> a) (\a' -> ()) (rev ())
+
+sig unsafeDup : rev a -o rev (a, a) 
+def unsafeDup a = pin a unsafeNew 
+
+-- The trace operator mentioned in Section 3.6.4 in the paper. 
+
+sig trace : (rev (Either a x) -o rev (Either b x)) -> rev a -o rev b 
+def trace h a = 
+    let rev (a1, a2) <- unsafeDup a in 
+    let rev (b1, n)  <- go (h (rev Left a1)) in 
+    let rev Left b2   <- h (goN a2 n) in 
+        invert unsafeDup (rev (b1, b2)) 
+    where
+        -- NB: currently, scoped type variables are not supported.
+        -- sig go : rev (Either b x) -o rev (b, Nat)
+        def go (rev Left b) = rev (b, rev Z) with isZ . snd 
+             | (rev Right x) = let rev (b, n) <- go (h (rev Right x)) in rev (b, rev S n) 
+
+        -- NB: currently, scoped type variables are not supported. 
+        -- sig goN : rev a -o rev Nat -o rev (Either a x) 
+        def goN a (rev Z) = rev Left a with isLeft 
+              | a (rev S n) = let rev Right x <- h (goN a n) in rev Right x                     
+    end
+
+
+data List a = Nil | Cons a (List a)           
+
+def null Nil = True
+       | _   = False 
+
+def not True  = False
+      | False = True 
+
+def rnot (rev True)  = rev False with not 
+       | (rev False) = rev True  
+
+def revStep (rev Left Nil)   = rev Left (rev Nil)
+                                       with \x -> case x of Left ys -> null ys |  _ -> False end
+          | (rev Left xs)    = rev Right (rev (xs, rev Nil))
+                                       with \x -> case x of Right (_,ys) -> null ys | _ -> False end
+          | (rev Right (Nil, ys))  = rev Left ys
+                                       with \x -> case x of Left ys -> not (null ys) | _ -> False end
+          | (rev Right (Cons a xs, ys)) = rev Right (rev (xs, rev Cons a ys))
+                                       with \x -> case x of Right (_,ys) -> not (null ys) | _ -> False end 
+
+sig reverseByTrace : rev (List a) -o rev (List a) 
+def reverseByTrace = trace revStep 
+
+def t0  = Cons 1 (Cons 2 (Cons 3 Nil))
+def rt0 = fwd reverseByTrace t0 
+def t0' = bwd reverseByTrace rt0 -- must be equal to t0 
+
+
+data B = B0 | B1 
+
+def double (rev Z) = rev Z with isZ 
+         | (rev S n) = rev S (rev S (double n))
+
+def odd Z     = False
+      | (S n) = even n 
+
+def even Z = True 
+       | (S n) = odd n 
+
+def msb2natStep 
+        (rev Left xs)        = rev Right (rev (xs, rev Z)) with \x -> case x of Right (_ , n) -> isZ n | _ -> False end 
+      | (rev Right (Nil, n)) = rev Left n                  with isLeft 
+      | (rev Right (Cons x xs, n)) = 
+          rev Right (rev (xs, case x of rev B0 -> double n with even | rev B1 -> rev S (double n) with odd end))
+          with \x -> case x of Right (_, n) -> not (isZ n) | _ -> False end
+
+
+
+-- Assumption: the input has no preceding 0s, such as Cons B0 (Cons B1 Nil)
+sig msb2nat : rev (List B) -o rev Nat 
+def msb2nat = trace msb2natStep 
+
+def b6  = Cons B1 (Cons B1 (Cons B0 Nil))
+def p6  = fwd msb2nat b6 
+def b6' = bwd msb2nat p6 

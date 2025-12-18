@@ -1,0 +1,91 @@
+-- Miscellaneous definitions. 
+
+data Nat = Z | S Nat 
+
+sig add : Nat -o rev Nat -o rev Nat 
+def add Z     y = y 
+      | (S x) y = rev S (add x y)
+
+def idNat = \x -> case x of 
+    | Z -> Z 
+    | S x -> S (idNat x) 
+    end 
+
+def fwd f = case unlift f of (x, _) -> x end 
+def bwd f = case unlift f of (_, x) -> x end 
+
+
+sig isZ : Nat -> Bool
+def isZ Z  = True
+      | _  = False 
+
+sig mul : Nat # Omega -> rev Nat # 1 -> rev Nat 
+def mul z (rev Z)   = rev Z with isZ
+      | z (rev S y) = add z (mul z y)  
+
+-- to check the inference result. 
+def mul' z (rev Z) = rev Z with isZ
+      |  z (rev S y) = add z (mul' z y)
+
+def q3 = fwd (mul (S (S Z))) (S (S Z))
+def q4 = fwd (\x -> mul (S (S Z)) x) (S (S (S (S Z))))
+
+sig invert : (rev a -o rev b) -> (rev b -o rev a)
+def invert f = case unlift f of (x,y) -> lift y x end 
+
+
+def exp0 = \x -> add (S Z) (mul (S (S Z)) x)
+
+def q5 = fwd exp0
+def q6 = bwd exp0 
+
+
+def qm = 1 + 2 * 3 + 4 * 5 
+def incL = lift (\x -> x + 1) (\x -> x - 1)
+
+-- More general type for comp
+sig comp1 : 
+    forall a b c d e f g h i.
+      (c <= d, a <= g, a ~ c * e)
+        => (f # c -> i) # b
+        -> (h # e -> f) # d
+        -> h # g -> i
+def comp1 f g x = f (g x) 
+
+-- equivalent type 
+sig comp2 : 
+    forall b c d e f g h i.
+      (c <= d, c <= g, e <= g)
+        => (f # c -> i) # b
+        -> (h # e -> f) # d
+        -> h # g -> i
+def comp2 = comp1
+
+sig comp3 : 
+    forall a b c d e f g h i.
+      (c <= d, a <= g, a ~ c * e)
+        => (f # c -> i) # b
+        -> (h # e -> f) # d
+        -> h # g -> i
+def comp3 = comp2 
+
+def comps =
+    let
+        sig f : forall p1 p2 p3 p4 p5 a b c. (p1 ~ p4, p1 * p3 ~ p5) => (b # p1 -> c) # p2 -> (a # p3 -> b) # p4 -> a # p5 -> c
+        def f = comp1
+        sig g : forall a b c. (b -o c) -o (a -o b) -o a -o c
+        def g = comp1
+        sig h : forall a b c. (b -> c) -o (a -> b) -> a -> c
+        def h = comp1 : (forall a b c. (b -> c) -o (a -> b) -> a -> c)
+    in 
+    ()
+
+def test f x y = test f 1 (f x y)
+
+sig dupNat : Nat -o (Nat, Nat) 
+def dupNat Z     = (Z, Z) 
+    |      (S x) = 
+     case dupNat x of 
+     | (s, t) -> (S s, S t)
+    end 
+
