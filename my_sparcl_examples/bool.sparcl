@@ -1,0 +1,41 @@
+-- Basic
+
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+def fwd f = case unlift f of (x, _) -> x end 
+def bwd f = case unlift f of (_, x) -> x end 
+
+-- sig (.) : (q <= pf, q <= pg, p <= px) => (b # q -> c) # pf -> (a # p -> b) # pg -> a # px -> c
+-- def (.) f g = \x -> f (g x)
+
+
+sig ($) : ( <= ) => (a # p -> b) # q -> a # r -> b
+def ($) f x = f x
+fixity $ 0 right 
+
+-- Bool
+
+sig idBool : forall p. Bool # p -> Bool
+def idBool = id
+
+sig not : forall p. Bool # p -> Bool
+def not False = True
+		| True = False
+
+sig eqBool : Bool -> Bool -> Bool
+def eqBool True c = c
+		| False c = not c
+
+sig land : Bool -> Bool -> Bool
+def land True c = c
+		| False _ = False
+
+sig lor : Bool -> Bool -> Bool
+def lor True _ = True
+		| False c = c
+
+sig lxor : Bool -> Bool -> Bool
+def lxor False c = c 
+		| True c = not c
+

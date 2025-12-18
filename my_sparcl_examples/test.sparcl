@@ -1,0 +1,93 @@
+
+
+data Nat = Z | S Nat 
+
+
+def fwd f = case unlift f of (x, _) -> x end 
+def bwd f = case unlift f of (_, x) -> x end 
+
+
+sig isZ : Nat -> Bool
+def isZ Z = True
+	  | _ = False
+
+sig add : Nat -> rev Nat -o rev Nat
+def add Z     y = y
+	  | (S x) y = rev S (add x y)
+
+sig mul : Nat -> rev Nat -o rev Nat
+def mul z (rev Z)   = rev Z with isZ
+	  | z (rev S y) = add z (mul z y) 
+
+sig isEven : Nat -> Bool
+def isEven Z = True
+		| (S Z) = False
+		| (S (S x)) = isEven x
+
+
+
+sig ffun : rev Nat -o (Nat , rev Nat)
+def ffun n = (Z, n)
+
+
+sig testf0 : rev a -o rev a
+def testf0 (rev a) = a
+
+sig testf01 : a -o a
+def testf01 a = a
+
+sig testf02 : a -> a
+def testf02 a = a
+
+-- sig testf02 : ((), ()) -o ()
+-- def testf02 (x, y) = x
+
+sig testf03 : ((), ()) -o ()
+def testf03 (x, ()) = x
+
+sig testf04 : ((), ()) -o rev ()
+def testf04 ((), ()) = rev ()
+
+sig testf05 : ((), ()) -> rev ()
+def testf05 ((), ()) = rev ()
+
+-- 
+-- sig testf06 : rev () -o ()
+-- def testf06 (rev x) = testf06 x
+
+sig testf06 : rev a -o ((), rev a)
+def testf06 x = ((), x)
+
+
+sig testf07 : (a -> rev ()) -> rev ()
+def testf07 f = rev ()
+
+sig testf08 : (a -> rev ()) -o (a -> rev ())
+def testf08 f = f
+
+sig testf09 : rev (a -> rev ()) -o rev (a -> rev ())
+def testf09 (rev f) = f
+
+-- sig testf09 : rev (() -> rev ()) -o rev ()
+-- def testf09 (rev f) = f ()
+
+sig testf09 : rev (() -> rev ()) -o rev ((() -> rev ()) ,())
+def testf09 (rev f) = pin f (\f' -> f' ())
+
+sig testf10 : rev a -o ((), rev a)
+def testf10 x = ((), x)
+
+sig testf11 : a -> ()
+def testf11 x = ()
+
+sig testf12 : a -> rev ()
+def testf12 x = rev ()
+
+
+-- sig testf13 : rev a -o rev ()
+-- def testf13 (rev a) = testf12 (testf11 a)
+
+
+
+
+
