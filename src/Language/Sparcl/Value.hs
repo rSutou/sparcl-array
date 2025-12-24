@@ -14,15 +14,21 @@ import           Language.Sparcl.Name
 import           Control.Monad.Fail
 import           Control.Monad.Fix         (MonadFix (..))
 
+import           Data.Array.IO (IOArray)
+
 data Value = VCon !Name ![Value]
            | VLit !Literal
            | VFun !(Value -> Eval Value)
            | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
+           | VArr !(IOArray Int Value) !Int
 
-newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
+-- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
+newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
 
-runEval :: Eval a -> a
-runEval (MkEval a) = runReader a 0
+-- runEval :: Eval a -> a
+-- runEval (MkEval a) = runReader a 0
+runEval :: Eval a -> IO a
+runEval (MkEval a) = runReaderT a 0
 
 instance MonadFail Eval where
   fail = cannotHappen . D.text
@@ -81,7 +87,10 @@ pprEnv env =
         | (k, v) <- M.toList env ]
 
 evalTest :: Eval a -> IO a
-evalTest a = return $ runEval a
+evalTest = runEval
+
+-- evalTest a = return $ runEval a
+
   -- case runReaderT a 0 of
   --   Left  s -> Fail.fail s
   --   Right v -> return v

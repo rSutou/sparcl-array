@@ -428,7 +428,7 @@ procLoad fp = do
   currentDir <- Rd.asks confCurrentDir
   let fp' = currentDir FP.</> trimSpace fp
   localLastLoad fp $ do
-    res <- checkError (fmap Just $ runM $ readModule fp' (\env bind -> M.toList $ runEval (evalUBind env bind)))
+    res <- checkError (fmap Just $ runM $ readModule fp' (\env bind -> liftIO $ M.toList <$> runEval (evalUBind env bind)))
                       (return Nothing)
     case res of
       Nothing  -> do
@@ -554,7 +554,8 @@ readExp str = do
 evalExp :: (Has KeyDebugLevel Int m, Has KeyValue ValueTable m, MonadIO m) => Exp Name -> m Value
 evalExp e = do
   env <- ask (key @KeyValue) -- getValueTable
-  liftIO $ evaluate $ force $ runEval (evalU env e)
+  -- liftIO $ evaluate $ force $ runEval (evalU env e)
+  liftIO $ evaluate . force =<< runEval (evalU env e)
 
 
 procExp :: String -> REPL ()
