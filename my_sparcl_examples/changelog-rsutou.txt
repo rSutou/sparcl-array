@@ -1,0 +1,49 @@
+Value.hs:
+	Data.Array.IO の importを追加
+	data Value の定義に純粋な(スライスではない)配列型を追加
+	IOArrayと配列の長さ(後でスライスとの変換で必要になるパラメータ)
+
+	Eval a を readerT int IO a に変更
+	それに伴い, 以下の部分を変更
+
+	Value.hsの
+		runEval の型と実装
+		evalTest の実装
+
+	Module.hsの
+		readModuleの引数の型
+		readModuleの引数interpを使用している個所
+		interpModuleWorksの引数の型
+
+	REPL.hsの
+		procload内のreadModuleに渡す関数を内の適用($)をfmap(<$>)に
+
+		evalExp内
+			演算子を適切に??? (=<<) に変更
+			evaluate関数をこのように使って本来の目的に沿っているのかは自身が無い
+
+この段階で型エラーは消えたが, 
+cabal run はできた
+:load してやったらエラー	
+Unexpected exception is thrown.
+cyclic evaluation in fixIO
+
+readModuleと
+interpModuleWorks で相互再帰している部分に IO を使っているのが問題か?
+
+	readModuleの引数interp の型の部分を IO ではなく M v m にしてみた
+	interpModuleWorksも同様に変更した
+
+
+
+
+
+
+
+
+
+
+
+Todo
+	スライス値を追加
+		親配列の情報と, 
