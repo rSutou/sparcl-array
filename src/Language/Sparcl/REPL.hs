@@ -428,7 +428,7 @@ procLoad fp = do
   currentDir <- Rd.asks confCurrentDir
   let fp' = currentDir FP.</> trimSpace fp
   localLastLoad fp $ do
-    res <- checkError (fmap Just $ runM $ readModule fp' (\env bind -> liftIO $ M.toList <$> runEval (evalUBind env bind)))
+    res <- checkError (fmap Just $ runM $ readModule fp' (\env bind -> M.toList <$> runEval (evalUBind env bind)))
                       (return Nothing)
     case res of
       Nothing  -> do

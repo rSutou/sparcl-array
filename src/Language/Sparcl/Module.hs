@@ -542,7 +542,7 @@ exportNames ns m = do
 
 -- readModule :: FilePath -> (M.Map Name v -> Bind Name -> [(Name, v)]) -> M v m (ModuleInfo v)
 -- readModule :: FilePath -> (M.Map Name v -> Bind Name -> IO [(Name, v)]) -> M v m (ModuleInfo v)
-readModule :: FilePath -> (M.Map Name v -> Bind Name -> M v m [(Name, v)]) -> M v m (ModuleInfo v)
+readModule :: FilePath -> (M.Map Name v -> Bind Name -> IO [(Name, v)]) -> M v m (ModuleInfo v)
 readModule fp interp = do
   debugPrint 1 $ text "Parsing" <+> ppr fp <+> text "..."
   s <- liftIO $ readFile fp
@@ -613,8 +613,8 @@ readModule fp interp = do
 
     valEnv <- ask (key @KeyValue)
     -- let newValueEnv = interp valEnv bind
-    -- newValueEnv <- liftIO $ interp valEnv bind
-    newValueEnv <- interp valEnv bind
+    newValueEnv <- liftIO $ interp valEnv bind
+    -- let newValueEnvIO = interp valEnv bind
 
     let newNameTable =
           let mns = [ (mn, n) | Original mn n _ <- S.toList newNames ]
@@ -690,7 +690,7 @@ readModule fp interp = do
 
 -- interpModuleWork :: ModuleName -> (M.Map Name v -> Bind Name -> [(Name,v)]) -> M v m (ModuleInfo v)
 -- interpModuleWork :: ModuleName -> (M.Map Name v -> Bind Name -> IO [(Name,v)]) -> M v m (ModuleInfo v)
-interpModuleWork :: ModuleName -> (M.Map Name v -> Bind Name -> M v m [(Name,v)]) -> M v m (ModuleInfo v)
+interpModuleWork :: ModuleName -> (M.Map Name v -> Bind Name -> IO [(Name,v)]) -> M v m (ModuleInfo v)
 interpModuleWork mo interp = do
   modTable <- St.get
   case M.lookup mo modTable of
