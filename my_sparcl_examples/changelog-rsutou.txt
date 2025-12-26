@@ -54,6 +54,13 @@ IOに戻した
 
 
 nolet.sparcl に let 使っていないのを書いてloadしたら行けた.
+
+Eval.hs
+	EvalUBindのrecのところで, unsafeInterLeaveIOを使って強制的にアクションを遅延させることで解消,
+
+recを含むプログラムをloodできた.
+
+
 	
 
 Todo
