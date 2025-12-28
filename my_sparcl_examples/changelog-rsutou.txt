@@ -9,6 +9,7 @@ Value.hs:
 	Value.hsの
 		runEval の型と実装
 		evalTest の実装
+		Pretty Value の実装
 
 	Module.hsの
 		readModuleの引数の型
@@ -61,7 +62,27 @@ Eval.hs
 recを含むプログラムをloodできた.
 
 
-	
+Value.hs
+	関数 copyValue :: Value -> Eval Value を追加, 
+単純に配列のときにmapArrayを使って複製するもの, 
+配列の各要素や, 関数が使用する環境内の値にはコピーが作用されていない
+
+
+次に, basemoduleinfoに
+newMArray :: (A -> A -> Bool) -> Int -> A -> R () -> R (MArray A)
+deleteMArray :: (A -> A -> Bool) -> Int -> A -> R (MArray A) -> R ()
+を追加する
+ここで, 配列の型は正確には
+forall a. MArray a とする
+
+変数名
+newMArray
+deleteMArray
+VArrのデストラクタとして働く
+unArr
+を追加
+
+
 
 Todo
 	スライス値を追加

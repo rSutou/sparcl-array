@@ -38,6 +38,8 @@ import           Language.Sparcl.DebugPrint
 import           Language.Sparcl.Surface.Parsing
 -- import Control.Exception (Exception, throw)
 
+import           Data.Array.MArray 
+
 data KeyName
 data KeyOp
 data KeyType
@@ -252,12 +254,23 @@ baseModuleInfo = ModuleInfo {
     leRational = base "leRational"
     ltRational = base "ltRational"
 
+    newMArray = base "newMArray"
+    deleteMArray = base "deleteMArray"
+
     unInt  (VLit (LitInt n)) = n
     unInt  _                 = cannotHappen $ text "Not an integer"
     unChar (VLit (LitChar n)) = n
     unChar _                  = cannotHappen $ text "Not a character"
     unRat (VLit (LitRational n)) = n
     unRat _                      = cannotHappen $ text "Not a rational"
+
+    unMArr (VMArr marr len) = (marr, len)
+    unMArr _                = cannotHappen $ text "Not a mutable array"
+    unUnit (VCon c []) | c == nameTuple 0 = ()
+    unUnit _                              = cannotHappen $ text "Not a unit"
+    unBool (VCon conTrue [])  = True
+    unBool (VCon conFalse []) = False
+    unBool _                  = cannotHappen $ text "Not a boolean"
 
     conTable = M.fromList [
       conTrue  |-> ConTy [] [] [] [] boolTy,
@@ -299,7 +312,18 @@ baseModuleInfo = ModuleInfo {
           nameTyBool |-> typeKi,
           nameTyChar |-> typeKi,
           nameTyRational |-> typeKi,
-          base "Un" |-> typeKi `arrKi` typeKi
+          base "Un" |-> typeKi `arrKi` typeKi,
+
+          nameTyMArray |-> typeKi `arrKi` typeKi,
+          newMArray |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy unitTy -@ marrayBodyTy avar ),
+          deleteMArray |->
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ marrayBodyTy avar -@ revTy unitTy )
+
           ]
 
     synTable = M.empty
@@ -337,8 +361,24 @@ baseModuleInfo = ModuleInfo {
 
           eqRational |-> (VFun $ \n -> return $ VFun $ \m -> return $ fromBool $ ((==) `on` unRat) n m),
           leRational |-> (VFun $ \n -> return $ VFun $ \m -> return $ fromBool $ ((<=) `on` unRat) n m),
-          ltRational |-> (VFun $ \n -> return $ VFun $ \m -> return $ fromBool $ ((<)  `on` unRat) n m)
+          ltRational |-> (VFun $ \n -> return $ VFun $ \m -> return $ fromBool $ ((<)  `on` unRat) n m),
 
+          newMArray |-> 
+            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $ 
+              \(VRes f b) -> let n' = unInt n in
+                             let f' = (\hp -> do 
+                                            unUnit <$> f hp
+                                            return $ liftIO $ do
+                                              newarr <- newArray (0, n' + 1) a 
+                                              return $ VMArr newarr n') in
+                             let b' = (\(VMArr ioa len) -> 
+                                              let VFun eq2 = eq in do
+                                              VFun eq1 <- eq2 a 
+                                              forMArrayM_ ioa (\a'-> do 
+                                                                    True <- unBool <$> eq1 a'
+                                                                    return ())
+                                              b unitVal) in 
+                             return $ VRes f' b')
           ]
 
     names = M.keys typeTable ++ M.keys conTable
@@ -351,6 +391,16 @@ baseModuleInfo = ModuleInfo {
 
     rationalTy = TyCon (base "Rational") []
     intTy = TyCon (base "Int") []
+
+    nameTyMArray = base "MArray"
+    fromIOArray ioa len = VMArr ioa len
+    marrayBodyTy avar = TyCon nameTyMArray [avar]
+    marrayTy = let aname = BoundTv $ Local $ User "a" in
+               TyForAll [aname] (TyQual [] $ marrayBodyTy (TyVar aname))
+    unitTy = tupleTy []
+    unitVal = VCon (nameTuple 0) []
+
+
     base n = nameInBase (User n)
     a |-> b = (a, b)
     infix 0 |->
