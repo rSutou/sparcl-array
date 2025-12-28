@@ -318,11 +318,11 @@ baseModuleInfo = ModuleInfo {
           newMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy unitTy -@ marrayBodyTy avar ),
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy unitTy -@ revTy (marrayBodyTy avar) ),
           deleteMArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ marrayBodyTy avar -@ revTy unitTy )
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy (marrayBodyTy avar) -@ revTy unitTy )
 
           ]
 
@@ -368,16 +368,18 @@ baseModuleInfo = ModuleInfo {
               \(VRes f b) -> let n' = unInt n in
                              let f' = (\hp -> do 
                                             unUnit <$> f hp
-                                            return $ liftIO $ do
+                                            MkEval $ liftIO $ do
                                               newarr <- newArray (0, n' + 1) a 
                                               return $ VMArr newarr n') in
                              let b' = (\(VMArr ioa len) -> 
-                                              let VFun eq2 = eq in do
-                                              VFun eq1 <- eq2 a 
-                                              forMArrayM_ ioa (\a'-> do 
-                                                                    True <- unBool <$> eq1 a'
-                                                                    return ())
-                                              b unitVal) in 
+                                              let VFun eq2 = eq in 
+                                                MkEval $ liftIO $ do
+                                                  VFun eq1 <- runEval $ eq2 a 
+                                                  forMArrayM_ ioa (\a'-> do 
+                                                                          r <- runEval $ eq1 a'
+                                                                          let True = unBool r
+                                                                          return ())
+                                                  runEval $ b unitVal) in 
                              return $ VRes f' b')
           ]
 

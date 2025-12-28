@@ -41,7 +41,7 @@ instance NFData Value where
   rnf (VLit l)    = rnf l
   rnf (VFun _)    = ()
   rnf (VRes _ _)  = ()
-  -- rnf (VMArr ioa len) = ()
+  rnf (VMArr _ _) = ()
 
 
 instance Pretty Value where

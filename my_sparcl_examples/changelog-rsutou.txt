@@ -10,6 +10,7 @@ Value.hs:
 		runEval の型と実装
 		evalTest の実装
 		Pretty Value の実装
+		NfData Value の実装(IOArrayを掘り起こすの大変なのでなんもしてない)
 
 	Module.hsの
 		readModuleの引数の型
@@ -81,6 +82,10 @@ deleteMArray
 VArrのデストラクタとして働く
 unArr
 を追加
+
+typeTableへの追加は終わり, 
+valueTableへの追加で型エラーが発生し謎
+主にEvalのコンストラクタMkEvalを意識できていなかったことが原因
 
 
 
