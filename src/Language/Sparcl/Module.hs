@@ -256,6 +256,9 @@ baseModuleInfo = ModuleInfo {
 
     newMArray = base "newMArray"
     deleteMArray = base "deleteMArray"
+    readMArray = base "readMArray"
+    swapMArray = base "swapMArray"
+    modifyMArray = base "modifyMArray"
 
     unInt  (VLit (LitInt n)) = n
     unInt  _                 = cannotHappen $ text "Not an integer"
@@ -268,9 +271,11 @@ baseModuleInfo = ModuleInfo {
     unMArr _                = cannotHappen $ text "Not a mutable array"
     unUnit (VCon c []) | c == nameTuple 0 = ()
     unUnit _                              = cannotHappen $ text "Not a unit"
-    unBool (VCon conTrue [])  = True
-    unBool (VCon conFalse []) = False
+    unBool (VCon c []) | c == conTrue = True
+                       | c == conFalse = False
     unBool _                  = cannotHappen $ text "Not a boolean"
+    unPair (VCon c [e1, e2]) | c == nameTuple 2 = (e1, e2)
+    unPair _                                    = cannotHappen $ text "Not a pair"
 
     conTable = M.fromList [
       conTrue  |-> ConTy [] [] [] [] boolTy,
@@ -318,11 +323,24 @@ baseModuleInfo = ModuleInfo {
           newMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy unitTy -@ revTy (marrayBodyTy avar) ),
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar *-> revTy unitTy -@ revTy (marrayBodyTy avar) ),
           deleteMArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar -@ revTy (marrayBodyTy avar) -@ revTy unitTy )
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar *-> revTy (marrayBodyTy avar) -@ revTy unitTy ),
+          readMArray |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
+          swapMArray |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ intTy -@ revTy avar -@ revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
+          modifyMArray |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ intTy -@ revTy (marrayBodyTy avar) -@ (avar -@ avar) -@ revTy (marrayBodyTy avar))
+
 
           ]
 
@@ -369,7 +387,7 @@ baseModuleInfo = ModuleInfo {
                              let f' = (\hp -> do 
                                             unUnit <$> f hp
                                             MkEval $ liftIO $ do
-                                              newarr <- newArray (0, n' + 1) a 
+                                              newarr <- newArray (0, n' - 1) a 
                                               return $ VMArr newarr n') in
                              let b' = (\(VMArr ioa len) -> 
                                               let VFun eq2 = eq in 
@@ -377,10 +395,51 @@ baseModuleInfo = ModuleInfo {
                                                   VFun eq1 <- runEval $ eq2 a 
                                                   forMArrayM_ ioa (\a'-> do 
                                                                           r <- runEval $ eq1 a'
-                                                                          let True = unBool r
+                                                                          True <- return $  unBool r
                                                                           return ())
                                                   runEval $ b unitVal) in 
-                             return $ VRes f' b')
+                             return $ VRes f' b'),
+          deleteMArray |-> 
+            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $ 
+              \(VRes f b) -> let n' = unInt n in
+                             let f' = (\hp -> 
+                                            let VFun eq2 = eq in MkEval $ liftIO $ do 
+                                              (ioa, len) <- unMArr <$> (runEval $ f hp)
+                                              VFun eq1 <- runEval $ eq2 a 
+                                              forMArrayM_ ioa (\a'-> do 
+                                                                      r <- runEval $ eq1 a'
+                                                                      True <- return $ unBool r
+                                                                      return ())
+                                              return unitVal
+                                       ) in
+                             let b' = (\v -> 
+                                          MkEval $ liftIO $ do
+                                            unUnit <$> return v
+                                            newarr <- newArray (0, n' - 1) a
+                                            runEval $ b $ VMArr newarr n') in 
+                             return $ VRes f' b'),
+          readMArray |-> 
+            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \(VRes fa ba) -> 
+              let f' = (\hp -> MkEval $ liftIO $ do
+                                n' <- return $ unInt n
+                                varr <- runEval $ fa hp
+                                (ioa, len) <- unMArr <$> return varr
+                                el <- readArray ioa n'
+                                return $ VCon (nameTuple 2) [el, varr]) in
+              let b' = (\v -> MkEval $ liftIO $ do
+                                          n' <- return $ unInt n
+                                          (v1,v2) <- return $ unPair v
+                                          (ioa, len) <- return $ unMArr v2
+                                          el <- readArray ioa n'
+                                          VFun eq2 <- return eq
+                                          VFun eq1 <- runEval $ eq2 v1
+                                          True <- unBool <$> (runEval $ eq1 el)
+                                          runEval $ ba v2
+                      ) in
+              return $ VRes f' b'
+            )
+          -- swapMArray |-> (),
+          -- swapMArray |-> ()
           ]
 
     names = M.keys typeTable ++ M.keys conTable
