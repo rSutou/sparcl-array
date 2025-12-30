@@ -39,6 +39,7 @@ import           Language.Sparcl.Surface.Parsing
 -- import Control.Exception (Exception, throw)
 
 import           Data.Array.MArray 
+import qualified Control.Monad.Reader as R
 
 data KeyName
 data KeyOp
@@ -271,11 +272,13 @@ baseModuleInfo = ModuleInfo {
     unMArr _                = cannotHappen $ text "Not a mutable array"
     unUnit (VCon c []) | c == nameTuple 0 = ()
     unUnit _                              = cannotHappen $ text "Not a unit"
-    unBool (VCon c []) | c == conTrue = True
+    unBool (VCon c []) | c == conTrue  = True
                        | c == conFalse = False
-    unBool _                  = cannotHappen $ text "Not a boolean"
+    unBool _                           = cannotHappen $ text "Not a boolean"
     unPair (VCon c [e1, e2]) | c == nameTuple 2 = (e1, e2)
     unPair _                                    = cannotHappen $ text "Not a pair"
+    unRes (VRes f b) = (f, b)
+    unRes _          = cannotHappen $ text "Not a reversivele"
 
     conTable = M.fromList [
       conTrue  |-> ConTy [] [] [] [] boolTy,
@@ -383,63 +386,104 @@ baseModuleInfo = ModuleInfo {
 
           newMArray |-> 
             (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $ 
-              \(VRes f b) -> let n' = unInt n in
-                             let f' = (\hp -> do 
-                                            unUnit <$> f hp
-                                            MkEval $ liftIO $ do
-                                              newarr <- newArray (0, n' - 1) a 
-                                              return $ VMArr newarr n') in
-                             let b' = (\(VMArr ioa len) -> 
-                                              let VFun eq2 = eq in 
-                                                MkEval $ liftIO $ do
-                                                  VFun eq1 <- runEval $ eq2 a 
-                                                  forMArrayM_ ioa (\a'-> do 
-                                                                          r <- runEval $ eq1 a'
-                                                                          True <- return $  unBool r
-                                                                          return ())
-                                                  runEval $ b unitVal) in 
-                             return $ VRes f' b'),
+              \vu -> 
+                let (f, b) = unRes vu in
+                let n' = unInt n in
+                let f' hp = do 
+                      unUnit <$> f hp
+                      MkEval $ liftIO $ do
+                        newarr <- newArray (0, n' - 1) a 
+                        return $ VMArr newarr n' in
+                let b' v = do
+                      (ioa, len) <- return $ unMArr v
+                      VFun eq2 <- return $ eq
+                      VFun eq1 <- eq2 $ a
+                      MkEval $ do
+                                i <- R.ask
+                                i' <- liftIO $ foldrMArrayM' (\a' i' -> do 
+                                                                  r <- runEvalWith i' $ eq1 a' 
+                                                                  True <- return $ unBool r
+                                                                  return i') i ioa
+                                R.local (const i') (return ())
+                      b unitVal in 
+                  return $ VRes f' b'),
           deleteMArray |-> 
             (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $ 
-              \(VRes f b) -> let n' = unInt n in
-                             let f' = (\hp -> 
-                                            let VFun eq2 = eq in MkEval $ liftIO $ do 
-                                              (ioa, len) <- unMArr <$> (runEval $ f hp)
-                                              VFun eq1 <- runEval $ eq2 a 
-                                              forMArrayM_ ioa (\a'-> do 
-                                                                      r <- runEval $ eq1 a'
-                                                                      True <- return $ unBool r
-                                                                      return ())
-                                              return unitVal
-                                       ) in
-                             let b' = (\v -> 
-                                          MkEval $ liftIO $ do
-                                            unUnit <$> return v
-                                            newarr <- newArray (0, n' - 1) a
-                                            runEval $ b $ VMArr newarr n') in 
-                             return $ VRes f' b'),
+              \varr ->  
+                let (f, b) = unRes varr in
+                let n' = unInt n in
+                let f' hp = do
+                      varr <- f hp
+                      (ioa, len) <- return $ unMArr varr
+                      VFun eq2 <- return $ eq
+                      VFun eq1 <- eq2 $ a 
+                      MkEval $ do
+                                i <- R.ask
+                                i' <- liftIO $ foldrMArrayM' (\a' i' -> do 
+                                                                  r <- runEvalWith i' $ eq1 a' 
+                                                                  True <- return $ unBool r
+                                                                  return i') i ioa
+                                R.local (const i') (return ())
+                      return unitVal in
+                let b' v = do
+                      return $ unUnit v
+                      newarr <- MkEval $ liftIO $ newArray (0, n' - 1) a 
+                      b $ VMArr newarr n' in
+                return $ VRes f' b'),
           readMArray |-> 
-            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \(VRes fa ba) -> 
-              let f' = (\hp -> MkEval $ liftIO $ do
-                                n' <- return $ unInt n
-                                varr <- runEval $ fa hp
-                                (ioa, len) <- unMArr <$> return varr
-                                el <- readArray ioa n'
-                                return $ VCon (nameTuple 2) [el, varr]) in
-              let b' = (\v -> MkEval $ liftIO $ do
-                                          n' <- return $ unInt n
-                                          (v1,v2) <- return $ unPair v
-                                          (ioa, len) <- return $ unMArr v2
-                                          el <- readArray ioa n'
-                                          VFun eq2 <- return eq
-                                          VFun eq1 <- runEval $ eq2 v1
-                                          True <- unBool <$> (runEval $ eq1 el)
-                                          runEval $ ba v2
-                      ) in
-              return $ VRes f' b'
-            )
-          -- swapMArray |-> (),
-          -- swapMArray |-> ()
+            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \varr -> 
+              let (fa, ba) = unRes varr in
+              let n' = unInt n in
+              let f' hp = do
+                    varr <- fa hp
+                    (ioa, len) <- return $ unMArr varr
+                    el <- MkEval $ liftIO $ readArray ioa n'
+                    return $ VCon (nameTuple 2) [el, varr] in
+              let b' v = do
+                    (v1,v2) <- return $ unPair v
+                    (ioa, len) <- return $ unMArr v2
+                    el <- MkEval $ liftIO $ readArray ioa n'
+                    VFun eq2 <- return eq
+                    VFun eq1 <- eq2 v1
+                    r <- eq1 el
+                    True <- return $ unBool r 
+                    ba v2 in
+              return $ VRes f' b'),
+          swapMArray |-> 
+            (VFun $ \n -> return $ VFun $ \(VRes fe be) -> return $ VFun $ \(VRes fa ba) ->
+              let n' = unInt n in
+              let f' hp = do
+                      ve <- fe hp
+                      varr <- fa hp
+                      (ioa, len) <- return $ unMArr varr
+                      oldv <- MkEval $ liftIO $ readArray ioa n'
+                      MkEval $ liftIO $ writeArray ioa n' ve
+                      return $ VCon (nameTuple 2) [oldv, varr] in
+              let b' v = do
+                      (ve, varr) <- return $ unPair v
+                      (ioa, len) <- return $ unMArr varr
+                      oldv <- MkEval $ liftIO $ readArray ioa n'
+                      MkEval $ liftIO $ writeArray ioa n' ve
+                      hpe <- be oldv
+                      hparr <- ba varr
+                      return $ unionHeap hpe hparr in
+              return $ VRes f' b')
+          -- modifyMArray |-> 
+          --   (VFun $ \n -> return $ VFun $ \(VRes fa ba) -> return $ VFun $ \(VFun f) -> 
+          --     let f' = (\hp -> MkEval $ liftIO $ do
+          --                 n' <- return $ unInt n
+          --                 varr <- runEval $ fa hp
+          --                 (ioa, len) <- return $ unMArr varr
+          --                 oldv <- readArray ioa n'
+          --                 newv <- runEval $ f oldv
+          --                 writeArray ioa n' newv
+          --                 return varr) in
+          --     let b' = (\v -> MkEval $ liftIO $ do
+          --                 n' <- return $ unInt n
+          --                 (ioa, len) <- return $ unMArr v
+          --                 hp1 <- 
+          --                 ) in
+          --     return $ VRes f' ba)
           ]
 
     names = M.keys typeTable ++ M.keys conTable

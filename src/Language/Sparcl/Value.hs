@@ -30,6 +30,14 @@ newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad
 runEval :: Eval a -> IO a
 runEval (MkEval a) = runReaderT a 0
 
+runEvalWith :: Int -> Eval a -> IO a
+runEvalWith i (MkEval a) = runReaderT a i
+
+-- unEval :: Eval a -> ReaderT Int IO a
+-- unEval (MkEval a) = a
+
+
+
 instance MonadFail Eval where
   fail = cannotHappen . D.text
 
