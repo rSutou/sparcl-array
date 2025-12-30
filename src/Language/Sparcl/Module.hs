@@ -342,7 +342,7 @@ baseModuleInfo = ModuleInfo {
           modifyMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ intTy -@ revTy (marrayBodyTy avar) -@ (avar -@ avar) -@ revTy (marrayBodyTy avar))
+            TyForAll [aname] (TyQual [] $ intTy -@ revTy (marrayBodyTy avar) -@ (avar -@ avar) *-> revTy (marrayBodyTy avar))
 
 
           ]
@@ -467,23 +467,28 @@ baseModuleInfo = ModuleInfo {
                       hpe <- be oldv
                       hparr <- ba varr
                       return $ unionHeap hpe hparr in
-              return $ VRes f' b')
-          -- modifyMArray |-> 
-          --   (VFun $ \n -> return $ VFun $ \(VRes fa ba) -> return $ VFun $ \(VFun f) -> 
-          --     let f' = (\hp -> MkEval $ liftIO $ do
-          --                 n' <- return $ unInt n
-          --                 varr <- runEval $ fa hp
-          --                 (ioa, len) <- return $ unMArr varr
-          --                 oldv <- readArray ioa n'
-          --                 newv <- runEval $ f oldv
-          --                 writeArray ioa n' newv
-          --                 return varr) in
-          --     let b' = (\v -> MkEval $ liftIO $ do
-          --                 n' <- return $ unInt n
-          --                 (ioa, len) <- return $ unMArr v
-          --                 hp1 <- 
-          --                 ) in
-          --     return $ VRes f' ba)
+              return $ VRes f' b'),
+          modifyMArray |-> 
+            (VFun $ \n -> return $ VFun $ \v -> return $ VFun $ \(VFun f) -> 
+              let (fa, ba) = unRes v in
+              let n' = unInt n in
+              newAddr $ \a -> do 
+                VRes f0 b0 <- f (VRes (lookupHeap a) (return . singletonHeap a))
+                let f' hp = do
+                        varr <- fa hp
+                        (ioa, len) <- return $ unMArr varr
+                        oldv <- MkEval $ liftIO $ readArray ioa n'
+                        newv <- f0 $ singletonHeap a oldv
+                        MkEval $ liftIO $ writeArray ioa n' newv
+                        return varr
+                let b' v = do
+                        (ioa, len) <- return $ unMArr v
+                        newv <- MkEval $ liftIO $ readArray ioa n'
+                        hp <- b0 newv
+                        oldv <- lookupHeap a hp
+                        MkEval $ liftIO $ writeArray ioa n' oldv
+                        ba v
+                return $ VRes f' b')
           ]
 
     names = M.keys typeTable ++ M.keys conTable
