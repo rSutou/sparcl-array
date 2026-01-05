@@ -8,7 +8,6 @@ Value.hs:
 
 	Value.hsの
 		runEval の型と実装
-
 		evalTest の実装
 		Pretty Value の実装
 		NfData Value の実装(IOArrayを掘り起こすの大変なのでなんもしてない)
@@ -61,7 +60,7 @@ nolet.sparcl に let 使っていないのを書いてloadしたら行けた.
 Eval.hs
 	EvalUBindのrecのところで, unsafeInterLeaveIOを使って強制的にアクションを遅延させることで解消,
 
-recを含むプログラムをloodできた.
+letを含むプログラムをloodできた.
 
 
 Value.hs
@@ -93,8 +92,15 @@ MkEvalを外すためだけの unEval を追加
 
 runEvalを使わない実装に調整
 
+
+
+bwdがバグりまくり問題
+unsafeInterLeaveIOを除去してletを使わない定義で検証しても失敗
+
+
 Todo
 	スライス値を追加
 		親配列の情報と, 
 	インデックスチェック
 	IOArrayを出力できるようにPrettyクラスを変更
+
