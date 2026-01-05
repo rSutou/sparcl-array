@@ -32,6 +32,7 @@ import           Control.Monad.IO.Class
 evalUBind :: Env -> Bind Name -> Eval Env
 evalUBind env ds = do
     rec ev  <- MkEval $ liftIO $ mapM (\(n,_,e) -> do
+                        -- v <- runEval $ evalU env' e
                         v <- unsafeInterleaveIO $ runEval $ evalU env' e
                         return (n,v)) ds
         let env' = extendsEnv ev env
