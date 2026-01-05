@@ -260,6 +260,9 @@ baseModuleInfo = ModuleInfo {
     readMArray = base "readMArray"
     swapMArray = base "swapMArray"
     modifyMArray = base "modifyMArray"
+    lengthMArray = base "lengthMArray"
+
+    forceDebudRes = base "forceRev"
 
     unInt  (VLit (LitInt n)) = n
     unInt  _                 = cannotHappen $ text "Not an integer"
@@ -326,23 +329,36 @@ baseModuleInfo = ModuleInfo {
           newMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar *-> revTy unitTy -@ revTy (marrayBodyTy avar) ),
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> avar *-> revTy unitTy -@ revTy (marrayBodyTy avar) ),
           deleteMArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ avar *-> revTy (marrayBodyTy avar) -@ revTy unitTy ),
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> avar *-> revTy (marrayBodyTy avar) -@ revTy unitTy ),
           readMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy -@ revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
+            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
           swapMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ intTy -@ revTy avar -@ revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
+            TyForAll [aname] (TyQual [] $ intTy *-> revTy avar -@ revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
           modifyMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ intTy -@ revTy (marrayBodyTy avar) -@ (avar -@ avar) *-> revTy (marrayBodyTy avar))
+            TyForAll [aname] (TyQual [] $ intTy *-> revTy (marrayBodyTy avar) -@ (revTy avar -@ revTy avar) *-> revTy (marrayBodyTy avar)),
+          lengthMArray |->
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ revTy (marrayBodyTy avar) -@ revTy (tupleTy [intTy, marrayBodyTy avar]) ),
+
+          forceDebudRes |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in 
+            TyForAll [aname] (TyQual [] $ revTy avar -@ avar)
+
+
+            
+
 
 
           ]
@@ -395,7 +411,7 @@ baseModuleInfo = ModuleInfo {
                         newarr <- newArray (0, n' - 1) a 
                         return $ VMArr newarr n' in
                 let b' v = do
-                      (ioa, len) <- return $ unMArr v
+                      (ioa, _) <- return $ unMArr v
                       VFun eq2 <- return $ eq
                       VFun eq1 <- eq2 $ a
                       MkEval $ do
@@ -407,14 +423,15 @@ baseModuleInfo = ModuleInfo {
                                 R.local (const i') (return ())
                       b unitVal in 
                   return $ VRes f' b'),
+                
           deleteMArray |-> 
             (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $ 
-              \varr ->  
-                let (f, b) = unRes varr in
+              \rarr ->  
+                let (f, b) = unRes rarr in
                 let n' = unInt n in
                 let f' hp = do
                       varr <- f hp
-                      (ioa, len) <- return $ unMArr varr
+                      (ioa, _) <- return $ unMArr varr
                       VFun eq2 <- return $ eq
                       VFun eq1 <- eq2 $ a 
                       MkEval $ do
@@ -431,8 +448,8 @@ baseModuleInfo = ModuleInfo {
                       b $ VMArr newarr n' in
                 return $ VRes f' b'),
           readMArray |-> 
-            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \varr -> 
-              let (fa, ba) = unRes varr in
+            (VFun $ \eq -> return $ VFun $ \n -> return $ VFun $ \vr -> 
+              let (fa, ba) = unRes vr in
               let n' = unInt n in
               let f' hp = do
                     varr <- fa hp
@@ -450,9 +467,11 @@ baseModuleInfo = ModuleInfo {
                     ba v2 in
               return $ VRes f' b'),
           swapMArray |-> 
-            (VFun $ \n -> return $ VFun $ \(VRes fe be) -> return $ VFun $ \(VRes fa ba) ->
+            (VFun $ \n -> return $ VFun $ \re -> return $ VFun $ \rarr ->
               let n' = unInt n in
               let f' hp = do
+                      (fe, be) <- return $ unRes re
+                      (fa, ba) <- return $ unRes rarr
                       ve <- fe hp
                       varr <- fa hp
                       (ioa, len) <- return $ unMArr varr
@@ -460,13 +479,15 @@ baseModuleInfo = ModuleInfo {
                       MkEval $ liftIO $ writeArray ioa n' ve
                       return $ VCon (nameTuple 2) [oldv, varr] in
               let b' v = do
+                      (fe, be) <- return $ unRes re
+                      (fa, ba) <- return $ unRes rarr
                       (ve, varr) <- return $ unPair v
                       (ioa, len) <- return $ unMArr varr
                       oldv <- MkEval $ liftIO $ readArray ioa n'
                       MkEval $ liftIO $ writeArray ioa n' ve
                       hpe <- be oldv
                       hparr <- ba varr
-                      return $ unionHeap hpe hparr in
+                      return $ unionHeap hparr hpe in
               return $ VRes f' b'),
           modifyMArray |-> 
             (VFun $ \n -> return $ VFun $ \v -> return $ VFun $ \(VFun f) -> 
@@ -488,7 +509,27 @@ baseModuleInfo = ModuleInfo {
                         oldv <- lookupHeap a hp
                         MkEval $ liftIO $ writeArray ioa n' oldv
                         ba v
-                return $ VRes f' b')
+                return $ VRes f' b'),
+          lengthMArray |->
+            (VFun $ \varr -> 
+              let (fa, ba) = unRes varr in
+              let f' hp = do
+                    varr <- fa hp
+                    (ioa, len) <- return $ unMArr varr
+                    return $ VCon (nameTuple 2) [VLit $ LitInt len, varr] in
+              let b' v = do
+                    (v1,v2) <- return $ unPair v
+                    (ioa, len) <- return $ unMArr v2
+                    len' <- return $ unInt v1
+                    True <- return $ len == len'
+                    ba v2 in
+              return $ VRes f' b'),
+
+          forceDebudRes |->
+            (VFun $ \vr -> 
+              let (f, b) = unRes vr in
+              f emptyHeap)
+
           ]
 
     names = M.keys typeTable ++ M.keys conTable
