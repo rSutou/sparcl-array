@@ -17,3 +17,19 @@ sig fwd : (rev a -o rev b) -> a -> b
 def fwd f = case unlift f of (x, _) -> x end 
 sig bwd : (rev a -o rev b) -> b -> a
 def bwd f = case unlift f of (_, x) -> x end 
+
+
+
+data Nat = Z | S Nat
+
+sig isZ : Nat -> Bool
+def isZ Z = True
+	| (S _) = False
+	
+sig add : Nat -> rev Nat -o rev Nat
+def add Z y = y
+		| (S x) y = rev S (add x y)
+
+
+sig fstsum : rev (Nat, Nat) -o rev (Nat, Nat)
+def fstsum (rev (x, y)) = pin x (\x' -> add x' y)
