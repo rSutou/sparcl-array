@@ -262,7 +262,7 @@ baseModuleInfo = ModuleInfo {
     modifyMArray = base "modifyMArray"
     lengthMArray = base "lengthMArray"
 
-    forceDebudRes = base "forceRev"
+    forceDeRev = base "forceDeRev"
 
     unInt  (VLit (LitInt n)) = n
     unInt  _                 = cannotHappen $ text "Not an integer"
@@ -351,7 +351,7 @@ baseModuleInfo = ModuleInfo {
             let avar = TyVar aname in 
             TyForAll [aname] (TyQual [] $ revTy (marrayBodyTy avar) -@ revTy (tupleTy [intTy, marrayBodyTy avar]) ),
 
-          forceDebudRes |-> 
+          forceDeRev |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
             TyForAll [aname] (TyQual [] $ revTy avar -@ avar)
@@ -525,7 +525,7 @@ baseModuleInfo = ModuleInfo {
                     ba v2 in
               return $ VRes f' b'),
 
-          forceDebudRes |->
+          forceDeRev |->
             (VFun $ \vr -> 
               let (f, b) = unRes vr in
               f emptyHeap)

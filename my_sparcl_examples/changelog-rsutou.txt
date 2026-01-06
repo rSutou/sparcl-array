@@ -96,6 +96,7 @@ runEvalを使わない実装に調整
 
 bwdがバグりまくり問題
 unsafeInterLeaveIOを除去してletを使わない定義で検証しても失敗
+Array使ってないプログラムでも失敗してるのはなぜ???
 
 
 Todo

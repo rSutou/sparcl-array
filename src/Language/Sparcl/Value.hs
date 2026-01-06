@@ -23,7 +23,7 @@ data Value = VCon !Name ![Value]
            | VMArr !(IOArray Int Value) !Int
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
-newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
+newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix, MonadIO)
 
 -- runEval :: Eval a -> a
 -- runEval (MkEval a) = runReader a 0
