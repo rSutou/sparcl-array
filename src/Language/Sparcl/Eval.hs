@@ -16,9 +16,12 @@ import           Data.Maybe                  (fromMaybe)
 -- import Control.Monad.State
 
 -- import qualified Control.Monad.Fail as Fail
-import           Control.Monad.Reader        (MonadReader (local), ask)
+import           Control.Monad.Reader        (MonadReader (local), ask, ReaderT (runReaderT))
 -- import           Debug.Trace                 (trace)
 import           Language.Sparcl.Pretty      hiding ((<$>))
+
+import           GHC.IO (unsafeInterleaveIO)
+import           Control.Monad.IO.Class
 
 -- lookupEnvR :: QName -> Env -> Eval Value
 -- lookupEnvR n env = case M.lookup n env of
@@ -29,7 +32,9 @@ import           Language.Sparcl.Pretty      hiding ((<$>))
 evalUBind :: Env -> Bind Name -> Eval Env
 evalUBind env ds = do
     rec ev  <- mapM (\(n,_,e) -> do
-                        v <- evalU env' e
+                        lvl <- ask 
+                        -- v <- evalU env' e
+                        v <- liftIO $ unsafeInterleaveIO $ runEvalWith lvl (evalU env' e)
                         return (n,v)) ds
         let env' = extendsEnv ev env
     return env'

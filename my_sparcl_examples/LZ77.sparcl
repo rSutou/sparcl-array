@@ -78,6 +78,8 @@ def repeatTake n l = goRepeatTake n l l
                      end
   end
 
+
+-- take の結果が逆な奴
 sig revTake : Int -> List a -> List a
 def revTake n l = goRevTake n l Nil
   where
@@ -121,23 +123,29 @@ def lz77 = goLz77 Nil
   where
     def goLz77 window (rev Nil)   = rev Nil with null
              | window (rev input) =
+-- revdo イズ何？？？？可逆もなど？自動pin?
       revdo Cons h t <- input;
             pair     <- const eqMaybeIntPair $ maxMatch window (Cons h t);
       in
       case pair of
+      -- マッチしなかった時
       | rev Nothing ->
         revdo h <- h;
               lzRest <- goLz77 (take winLength (Cons h window)) t;
         in
         rev Cons (rev Lit h) lzRest
         with isLit . head
+      -- マッチしたパターンが得られたとき
       | rev Just (d, l) ->
+      -- 入力文字列の分割
         revdo l <- l;
               (match, rest) <- split l (rev Cons h t);
         in
+        -- 後ろの入力エンコード
         revdo match <- match;
               lzRest <- goLz77 (take winLength (revApp match window)) rest;
         in
+        -- 今回マッチした部分のdelete
         revdo p <- rev (d, l);
               () <- delete (eqList eqChar) (getMatch window p) match;
         in
@@ -154,12 +162,15 @@ def maxMatch window input =
   | False -> Just (d, l)
   end
   where
+  -- windowからmatchbufに1文字ずつ移動しながら, ベストマッチを記憶しつつ再帰的に全通りのsuffixでマッチを試す
     def goMaxMatch bestMatch matchBuf Nil        input = bestMatch
                  | bestMatch matchBuf (Cons h t) input =
                    let matchBuf <- Cons h matchBuf in
                    let newMatch <- updateMatch bestMatch matchBuf input in
                    goMaxMatch newMatch matchBuf t input
 
+  -- createMatch結果がベストマッチより良いマッチだと判定すれば, 更新する
+  -- マッチ長が同じならば更新なし. つまり, dが小さい方が優先される
     def updateMatch (d, l) matchBuf input =
       let newLength <- length (createMatch matchBuf matchBuf input) in
       case ltInt l newLength of
@@ -167,6 +178,10 @@ def maxMatch window input =
       | False -> (d, l)
       end
 
+  -- 1つ目のマッチバフがwindowのsuffix全体を記憶しているもの
+  -- 2つ目が, 途中までマッチしたsuffix
+  -- 3つ目が, 残りの入力
+  -- 返り値は, マッチしたinputの接頭部分列
     def createMatch matchBuf Nil          input        = createMatch matchBuf matchBuf input
                   | matchBuf _            Nil          = Nil
                   | matchBuf (Cons h1 t1) (Cons h2 t2) =
@@ -186,9 +201,3 @@ def split _ (rev Nil)      = rev (rev Nil, rev Nil) with \(x, y) -> and (null x)
           | True -> rev (rev Nil, rev Cons h t)
           | False -> let rev (hs, ts) <- split (n - 1) t in rev (rev Cons h hs, ts)
           end
-
-def inputList = Cons 'a' (Cons 'a' (Cons 'a' (Cons 'b' (Cons 'b' (Cons 'a' (Cons 'a' Nil))))))
-
-def outputList = fwd lz77 inputList 
-
-def inputList' = bwd lz77 outputList 

@@ -1,0 +1,35 @@
+-- identity
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+-- pair-destructer
+sig fst : (a, b) -> a
+def fst (a, _) = a
+
+sig scd : (a, b) -> b
+def scd (_, b) = b
+
+sig swap : rev (a, b) -o rev (b,a)
+def swap (rev (a, b)) = rev (b, a)
+
+-- unlifting-and-apply
+sig fwd : (rev a -o rev b) -> a -> b
+def fwd f = case unlift f of (x, _) -> x end 
+sig bwd : (rev a -o rev b) -> b -> a
+def bwd f = case unlift f of (_, x) -> x end 
+
+
+
+data Nat = Z | S Nat
+
+sig isZ : Nat -> Bool
+def isZ Z = True
+	| (S _) = False
+	
+sig add : Nat -> rev Nat -o rev Nat
+def add Z y = y
+		| (S x) y = rev S (add x y)
+
+
+sig fstsum : rev (Nat, Nat) -o rev (Nat, Nat)
+def fstsum (rev (x, y)) = pin x (\x' -> add x' y)

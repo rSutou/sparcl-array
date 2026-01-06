@@ -1,0 +1,204 @@
+-- identity
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+-- pair-destructer
+sig fst : (a, b) -> a
+def fst (a, _) = a
+
+sig scd : (a, b) -> b
+def scd (_, b) = b
+
+sig swap : rev (a, b) -o rev (b,a)
+def swap (rev (a, b)) = rev (b, a)
+
+-- unlifting-and-apply
+sig fwd : (rev a -o rev b) -> a -> b
+def fwd f = case unlift f of (x, _) -> x end 
+sig bwd : (rev a -o rev b) -> b -> a
+def bwd f = case unlift f of (_, x) -> x end 
+
+-- function transformers
+sig curry : (q <= ra, q <= rb) => ((a, b) # q -> c) # p -> a # ra -> b # rb -> c
+def curry f x y = f (x,y)
+sig uncurry : (ra <= q, rb <= q) => (a # ra -> b # rb -> c) # p -> (a, b) # q -> c
+def uncurry f (x,y) = f x y
+
+sig curryR : (rev (a, b) -o rev c) # p -> rev a -o rev b -o rev c
+def curryR f x y = f (rev (x,y))
+sig uncurryR : (rev a -o rev b -o rev c) # p -> rev (a, b) -o rev c
+def uncurryR f (rev (x,y)) = f x y
+
+-- 高階多引数関数の引数の順番を入れ替える
+-- unliftを使いやすくするためのもの
+sig argswap : (qa <= ra, qb <= rb) => (a # qa -> b # qb -> c) # p -> b # rb -> a # ra -> c
+def argswap f a b = f b a
+
+
+-- liftが必要になる構文
+-- invertは安全のはず
+sig invert : (rev a -o rev b) -> rev b -o rev a
+def invert f = case unlift f of (x,y) -> lift y x end
+-- uncurry lift (fwd swap (unlift f))
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig const : (a # p -> a # q -> Bool) -> a -> rev a
+def const eq c =
+	lift (\() -> c)
+		 (\c' -> let True <- eq c c' in ())
+		 (rev ())
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig delete : (a # p -> a # q -> Bool) -> a -> rev a -o rev ()
+def delete eq c = invert (\(rev ()) -> const eq c)
+
+
+-- apply関数(右項が引数)
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
+def ($) f x = f x
+
+fixity $ 0 right 
+
+-- 関数合成関数(右項が関数)
+sig (.) : (qf <= px, qf <= pg, qg <= px) => (b # qf -> c) # pf -> (a # qg -> b) # pg -> a # px -> c
+def (.) f g = \x -> f (g x)
+
+fixity . 90 right
+
+-- まだ全部MArrayのバージョンである
+
+sig make111 : rev () -o rev (MArray Int)
+def make111 = newMArray eqInt 3 1
+
+sig arrayHead : MArray Int -> Int
+def arrayHead arr = let (h,_) <- fwd (readMArray eqInt 0) arr in h
+
+sig toTuple2 : MArray Int -> (Int,Int)
+def toTuple2 arr = 
+	let (e1, _) <- fwd (readMArray eqInt 0) arr in 
+	let (e2, _) <- fwd (readMArray eqInt 1) arr in (e1,e2)
+
+
+sig toTuple3 : MArray Int -> (Int,Int,Int)
+def toTuple3 arr =
+	let (e1, _) <- fwd (readMArray eqInt 0) arr in 
+	let (e2, _) <- fwd (readMArray eqInt 1) arr in 
+	let (e3, _) <- fwd (readMArray eqInt 2) arr in (e1,e2,e3)
+
+sig newIntArray : Int -> Int -> rev () -o rev (MArray Int)
+def newIntArray = newMArray eqInt
+
+sig test0newMArray : rev () -o rev ()
+def test0newMArray (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev () <- invert (newMArray eqInt 3 1) marr in
+	rev ()
+
+sig test0deleteMArray : rev () -o rev ()
+def test0deleteMArray (rev ()) =
+	let (rev marr) <- invert (deleteMArray eqInt 3 1) (rev ()) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+
+sig test0newdelete : rev () -o rev ()
+def test0newdelete (rev ()) =
+	let (rev marr) <- invert (deleteMArray eqInt 3 1) (rev ()) in
+	let rev () <- invert (newMArray eqInt 3 1) marr in
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+
+
+sig test0readMArray : rev () -o rev ()
+def test0readMArray (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e, marr) <- readMArray eqInt 1 marr  in
+	let rev marr <- invert (readMArray eqInt 1) (rev (e, marr)) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+
+sig test0readMArray1 : rev () -o rev ()
+def test0readMArray1 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e, marr) <- readMArray eqInt 1 marr  in
+	-- let rev marr <- invert (readMArray eqInt 1) (rev (e, marr)) in
+	let rev () <- delete eqInt 1 e in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+sig test0readMArray2 : rev () -o rev ()
+def test0readMArray2 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev marr <- invert (readMArray eqInt 1) (rev (const eqInt 1, marr)) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+	
+sig unsafetest0readMArray3 : rev () -o rev Int
+def unsafetest0readMArray3 ru =
+	let rev marr <- newMArray eqInt 3 1 ru in
+	let rev (e, marr) <- readMArray eqInt 1 marr  in
+	-- let rev marr <- invert (readMArray eqInt 1) (rev (e, marr)) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	e
+
+
+
+sig test0modifyMArray0 : rev () -o rev ()
+def test0modifyMArray0 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev marr <- modifyMArray 1 marr (\x -> x) in
+	let rev marr <- modifyMArray 1 marr (\x -> x) in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+sig swapMArrayPair : Int -> rev (a, MArray a) -o rev (a, MArray a)
+def swapMArrayPair i (rev (a, ma)) = swapMArray i a ma
+
+sig test0swapMArray0 : rev () -o rev ()
+def test0swapMArray0 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
+	let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
+	let rev () <- delete eqInt 4 e4 in
+	let rev () <- deleteMArray eqInt 3 1 marr1 in
+	rev () 
+
+sig test0swapMArray1 : rev () -o rev ()
+def test0swapMArray1 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
+	let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
+	let rev () <- delete eqInt 4 e in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+
+
+sig fail0swapMArray2 : rev () -o rev ()
+def fail0swapMArray2 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
+	let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
+	let rev () <- delete eqInt 4 e in
+	let rev () <- deleteMArray eqInt 3 1 marr in
+	rev ()
+	
+sig test0swapMArray3 : rev () -o rev ()
+def test0swapMArray3 (rev ()) =
+	let rev marr <- newMArray eqInt 3 1 (rev ()) in
+	let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
+	let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
+	let rev () <- delete eqInt 4 e4 in
+	let rev () <- deleteMArray eqInt 3 1 marr1 in
+	rev () 
+
+
+sig constArias : (MArray a -> MArray a -> Bool) ->
+				  MArray a -> rev (MArray a)
+def constArias eqMArr ma = 
+	let rev rarr <- const eqMArr ma in
+	rarr
+
+

@@ -1,0 +1,107 @@
+Value.hs:
+	Data.Array.IO の importを追加
+	data Value の定義に純粋な(スライスではない)配列型を追加
+	IOArrayと配列の長さ(後でスライスとの変換で必要になるパラメータ)
+
+	Eval a を readerT int IO a に変更
+	それに伴い, 以下の部分を変更
+
+	Value.hsの
+		runEval の型と実装
+		evalTest の実装
+		Pretty Value の実装
+		NfData Value の実装(IOArrayを掘り起こすの大変なのでなんもしてない)
+
+	Module.hsの
+		readModuleの引数の型
+		readModuleの引数interpを使用している個所
+		interpModuleWorksの引数の型
+
+	REPL.hsの
+		procload内のreadModuleに渡す関数を内の適用($)をfmap(<$>)に
+
+		evalExp内
+			演算子を適切に??? (=<<) に変更
+			evaluate関数をこのように使って本来の目的に沿っているのかは自身が無い
+
+この段階で型エラーは消えたが, 
+cabal run はできた
+:load してやったらエラー	
+Unexpected exception is thrown.
+cyclic evaluation in fixIO
+
+readModuleと
+interpModuleWorks で相互再帰している部分に IO を使っているのが問題か?
+
+	readModuleの引数interp の型の部分を IO ではなく M v m にしてみた
+	interpModuleWorksも同様に変更した
+	REPL.hs内でreadModuleを呼び出してるところも変更が必要
+	 readModuleに渡す関数内でliftIOをするように変更
+変わらなかった. 
+	よく考えたらliftIOのタイミングが違うだけだった
+IOに戻した
+
+このエラーの原因はreadModule とinterpModuleWorksの再帰だと思うが, 
+理解のためにはこのIOモナドがつかわれている場所を見るのもよさそうである
+
+仮説1	
+	Module.hs内の
+    -- let newValueEnv = interp valEnv bind
+    -- newValueEnv <- liftIO $ interp valEnv bind
+	と変更した部分において, 遅延されるべき計算がアクションとしてこのタイミングで実行することを強制されているのが問題か?
+
+仮説2
+	EVAL a が ReaderT IO になってしまったことによるサイクルか? 
+	EvalUBindのrecのところが
+
+
+nolet.sparcl に let 使っていないのを書いてloadしたら行けた.
+
+Eval.hs
+	EvalUBindのrecのところで, unsafeInterLeaveIOを使って強制的にアクションを遅延させることで解消,
+
+letを含むプログラムをloodできた.
+
+
+Value.hs
+	関数 copyValue :: Value -> Eval Value を追加, 
+単純に配列のときにmapArrayを使って複製するもの, 
+配列の各要素や, 関数が使用する環境内の値にはコピーが作用されていない
+
+
+次に, basemoduleinfoに
+newMArray :: (A -> A -> Bool) -> Int -> A -> R () -> R (MArray A)
+deleteMArray :: (A -> A -> Bool) -> Int -> A -> R (MArray A) -> R ()
+を追加する
+ここで, 配列の型は正確には
+forall a. MArray a とする
+
+変数名
+newMArray
+deleteMArray
+VArrのデストラクタとして働く
+unArr
+を追加
+
+typeTableへの追加は終わり, 
+valueTableへの追加で型エラーが発生し謎
+主にEvalのコンストラクタMkEvalを意識できていなかったことが原因
+
+runEvalWithを追加
+MkEvalを外すためだけの unEval を追加
+
+runEvalを使わない実装に調整
+
+
+
+bwdがバグりまくり問題
+unsafeInterLeaveIOを除去してletを使わない定義で検証しても失敗
+Array使ってないプログラムでも失敗してるのはなぜ???
+
+
+Todo
+	スライス値を追加
+		親配列の情報と, 
+	インデックスチェック
+	IOArrayを出力できるようにPrettyクラスを変更
+

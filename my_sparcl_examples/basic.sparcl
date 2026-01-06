@@ -1,0 +1,236 @@
+-- identity
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+-- pair-destructer
+sig fst : (a, b) -> a
+def fst (a, _) = a
+
+sig scd : (a, b) -> b
+def scd (_, b) = b
+
+sig swap : rev (a, b) -o rev (b,a)
+def swap (rev (a, b)) = rev (b, a)
+
+-- unlifting-and-apply
+sig fwd : (rev a -o rev b) -> a -> b
+def fwd f = case unlift f of (x, _) -> x end 
+sig bwd : (rev a -o rev b) -> b -> a
+def bwd f = case unlift f of (_, x) -> x end 
+
+-- function transformers
+sig curry : (q <= ra, q <= rb) => ((a, b) # q -> c) # p -> a # ra -> b # rb -> c
+def curry f x y = f (x,y)
+sig uncurry : (ra <= q, rb <= q) => (a # ra -> b # rb -> c) # p -> (a, b) # q -> c
+def uncurry f (x,y) = f x y
+
+sig curryR : (rev (a, b) -o rev c) # p -> rev a -o rev b -o rev c
+def curryR f x y = f (rev (x,y))
+sig uncurryR : (rev a -o rev b -o rev c) # p -> rev (a, b) -o rev c
+def uncurryR f (rev (x,y)) = f x y
+
+-- 高階多引数関数の引数の順番を入れ替える
+-- unliftを使いやすくするためのもの
+sig argswap : (qa <= ra, qb <= rb) => (a # qa -> b # qb -> c) # p -> b # rb -> a # ra -> c
+def argswap f a b = f b a
+
+
+-- liftが必要になる構文
+-- invertは安全のはず
+sig invert : (rev a -o rev b) -> rev b -o rev a
+def invert f = uncurry lift (fwd swap (unlift f))
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig const : (a # p -> a # q -> Bool) -> a -> rev a
+def const eq c =
+	lift (\() -> c)
+		 (\c' -> let True <- eq c c' in ())
+		 (rev ())
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig delete : (a # p -> a # q -> Bool) -> a -> rev a -o rev ()
+def delete eq c = invert (\(rev ()) -> const eq c)
+
+
+-- apply関数(右項が引数)
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
+def ($) f x = f x
+
+fixity $ 0 right 
+
+-- 関数合成関数(右項が関数)
+sig (.) : (qf <= px, qf <= pg, qg <= px) => (b # qf -> c) # pf -> (a # qg -> b) # pg -> a # px -> c
+def (.) f g = \x -> f (g x)
+
+fixity . 90 right
+
+
+-- Bool
+sig idBool : rev Bool -o rev Bool
+def idBool b = b
+
+sig not : rev Bool -o rev Bool
+def not (rev False) = rev True with fwd idBool
+		| (rev True) = rev False
+
+sig eqBool : forall q. Bool -> rev Bool # q -> rev Bool
+def eqBool True c = c
+		| False c = not c
+
+sig ifFunc : Bool -> a -> a -> a
+def ifFunc True x _ = x
+		| False _ x = x
+
+sig land : Bool -> Bool -> Bool
+def land True c = c
+		| False _ = False
+
+sig lor : Bool -> Bool -> Bool
+def lor True _ = True
+		| False c = c
+
+sig lxor : Bool -> rev Bool -o rev Bool
+def lxor False c = c 
+		| True c = not c
+
+sig lxorIR : Bool -> Bool -> Bool
+def lxorIR = fwd . lxor
+
+
+-- nat
+
+data Nat = Z | S Nat 
+
+sig idNat : rev Nat -o rev Nat
+def idNat n = n
+
+sig isZ : Nat -> Bool
+def isZ Z = True
+	| (S _) = False
+
+sig succ : rev Nat -o rev Nat
+def succ n = rev S n
+
+sig pred : rev Nat -o rev Nat
+def pred (rev S n) = n
+
+sig eqNat : Nat -> Nat -> Bool
+def eqNat Z Z = True
+		| (S _) Z = False
+		| Z (S _) = False
+		| (S a) (S b) = eqNat a b
+
+sig add : Nat -> rev Nat -o rev Nat
+def add Z y = y
+		| (S x) y = rev S (add x y)
+
+sig mul : Nat -> rev Nat -o rev Nat
+def mul x (rev Z) = rev Z with isZ
+		| x (rev S y) = add x (mul x y)
+
+sig isEven : Nat -> Bool
+def isEven Z = True
+		| (S Z) = False
+		| (S (S n)) = isEven n
+
+sig isOdd : Nat -> Bool
+def isOdd = \n -> fwd not (isEven n)
+
+sig lt : Nat -> Nat -> Bool
+def lt _ Z = False
+	| (S x) (S y) = lt x y
+
+sig le : Nat -> Nat -> Bool
+def le x y = lt x (S y)
+
+sig gt : Nat -> Nat -> Bool
+def gt x y = fwd not (le x (S y))
+
+sig le : Nat -> Nat -> Bool
+def le x y = fwd not (lt x (S y))
+
+sig sub : rev Nat -o Nat -> rev Nat
+def sub x Z = x
+		| (rev S x) (S y) = sub x y
+
+-- ゼロ除算をどうするか考えてなかったので保留
+-- sig mod : Nat -> Nat -> Nat
+-- def mod x y = ifFunc (lt x y) x (fwd (\n -> sub n y) x)
+
+-- sig dev : Nat -> Nat -> Nat
+-- def dev x y = case (lt x y) of
+-- 			| True -> Z
+-- 			| False -> S (dev (fwd (\n -> sub n y) x) y)
+
+-- sig devmod : rev Nat -o Nat -> rev (Nat, Nat)
+-- def devmod (rev Z) y = rev (rev Z, rev Z) 
+--		| x y =
+
+
+-- Nat -> Int変換, invert, const, delete だけでできるかな? (できた)
+-- この succIntR 関数, 重要そう(直感)
+sig succRInt : rev Int -o rev Int
+def succRInt (rev i) = 
+	let rev (i, i2) <- pin i (\i' -> const eqInt (1 + i')) in
+	let rev (i2, ()) <- pin i2 (\i2' -> delete eqInt (i2' - 1) i) in
+	i2
+
+sig nat2int : rev Nat -o rev Int
+def nat2int (rev Z) = const eqInt 0
+			| (rev S n) = succRInt (nat2int n)
+
+-- 応用して, addIntRを考える
+sig addRInt : Int -> rev Int -o rev Int
+def addRInt m (rev n) =
+		let rev (n, r) <- pin n (\n' -> const eqInt (n' + m)) in
+		let rev (r, ()) <- pin r (\r' -> delete eqInt (r' - m) n) in
+		r
+
+-- 応用して, liftInt を考える
+sig liftInt : (Int -> Int) -> (Int -> Int) -> rev Int -o rev Int
+def liftInt fw bw (rev i) =
+		let rev (i, r) <- pin i (\i' -> const eqInt (fw i')) in
+		let rev (r, ()) <- pin r (\r' -> delete eqInt (bw r') i) in
+		r
+
+-- さらに応用して, 汎用lift を考える
+sig lift' : (a -> a -> Bool) -> (a -> a) -> (a -> a) -> rev a -o rev a
+def lift' eq fw bw (rev a) =
+		let rev (a, r) <- pin a (\a' -> const eq (fw a')) in
+		let rev (r, ()) <- pin r (\r' -> delete eq (bw r') a) in
+		r
+
+-- 
+sig lift'' : (a -> a -> Bool) -> (b -> b -> Bool) -> (a -> b) -> (b -> a) -> rev a -o rev b
+def lift'' eqa eqb fw bw (rev a) =
+		let rev (a, b) <- pin a (\a' -> const eqb (fw a')) in
+		let rev (b, ()) <- pin b (\b' -> delete eqa (bw b') a) in
+		b
+
+data Testd a = C (a -> a) | N
+
+
+
+
+-- list
+data List a = Cons a (List a) | Nil
+
+sig isNil : List a -> Bool
+def isNil Nil = True
+		| (Cons _ _) = False
+
+sig length : List a -> Int
+def length Nil = 0
+		| (Cons _ t) = 1 + length t
+
+sig head : List a -> a
+def head (Cons h _) = h
+
+sig tail : List a -> List a
+def tail (Cons _ t) = t
+
+-- sig take : Int -> List a -> List a
+-- def take n 
+
+
+

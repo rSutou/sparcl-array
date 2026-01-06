@@ -14,15 +14,29 @@ import           Language.Sparcl.Name
 import           Control.Monad.Fail
 import           Control.Monad.Fix         (MonadFix(..))
 
+import           Data.Array.IO (IOArray, mapArray)
+
 data Value = VCon !Name ![Value]
            | VLit !Literal
            | VFun !(Value -> Eval Value)
            | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
+           | VMArr !(IOArray Int Value) !Int
 
-newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
+-- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
+newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix, MonadIO)
 
-runEval :: Eval a -> a
-runEval (MkEval a) = runReader a 0
+-- runEval :: Eval a -> a
+-- runEval (MkEval a) = runReader a 0
+runEval :: Eval a -> IO a
+runEval (MkEval a) = runReaderT a 0
+
+runEvalWith :: Int -> Eval a -> IO a
+runEvalWith i (MkEval a) = runReaderT a i
+
+-- unEval :: Eval a -> ReaderT Int IO a
+-- unEval (MkEval a) = a
+
+
 
 instance MonadFail Eval where
   fail = cannotHappen . D.text
@@ -35,6 +49,7 @@ instance NFData Value where
   rnf (VLit l)    = rnf l
   rnf (VFun _)    = ()
   rnf (VRes _ _)  = ()
+  rnf (VMArr _ _) = ()
 
 
 instance Pretty Value where
@@ -45,6 +60,7 @@ instance Pretty Value where
   pprPrec _ (VLit l) = ppr l
   pprPrec _ (VFun _) = D.text "<function>"
   pprPrec _ (VRes _ _) = D.text "<reversible computation>"
+  pprPrec _ (VMArr _ _) = D.text "<mutable array>"
 
 
 -- type Eval = ReaderT Int (Either String)
@@ -79,7 +95,10 @@ pprEnv env =
         | (k, v) <- M.toList env ]
 
 evalTest :: Eval a -> IO a
-evalTest a = return $ runEval a
+evalTest = runEval
+
+-- evalTest a = return $ runEval a
+
   -- case runReaderT a 0 of
   --   Left  s -> Fail.fail s
   --   Right v -> return v
@@ -127,3 +146,9 @@ removesHeap xs heap = foldl (flip removeHeap) heap xs
 singletonHeap :: Addr -> Value -> Heap
 singletonHeap = M.singleton
 
+
+copyValue :: Value -> Eval Value
+copyValue (VMArr ioA size) = 
+  MkEval $ liftIO $ 
+  mapArray id ioA >>= (\arr -> return $ VMArr arr size)
+copyValue v = return v 
