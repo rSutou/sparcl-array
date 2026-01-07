@@ -26,36 +26,16 @@ Value.hs:
 
 この段階で型エラーは消えたが, 
 cabal run はできた
-:load してやったらエラー	
+:load したらエラー	
 Unexpected exception is thrown.
 cyclic evaluation in fixIO
-
-readModuleと
-interpModuleWorks で相互再帰している部分に IO を使っているのが問題か?
-
-	readModuleの引数interp の型の部分を IO ではなく M v m にしてみた
-	interpModuleWorksも同様に変更した
-	REPL.hs内でreadModuleを呼び出してるところも変更が必要
-	 readModuleに渡す関数内でliftIOをするように変更
-変わらなかった. 
-	よく考えたらliftIOのタイミングが違うだけだった
-IOに戻した
-
-このエラーの原因はreadModule とinterpModuleWorksの再帰だと思うが, 
-理解のためにはこのIOモナドがつかわれている場所を見るのもよさそうである
-
-仮説1	
-	Module.hs内の
-    -- let newValueEnv = interp valEnv bind
-    -- newValueEnv <- liftIO $ interp valEnv bind
-	と変更した部分において, 遅延されるべき計算がアクションとしてこのタイミングで実行することを強制されているのが問題か?
 
 仮説2
 	EVAL a が ReaderT IO になってしまったことによるサイクルか? 
 	EvalUBindのrecのところが
 
 
-nolet.sparcl に let 使っていないのを書いてloadしたら行けた.
+試しにnolet.sparcl に let 使っていないのを書いてloadしたら行けた.
 
 Eval.hs
 	EvalUBindのrecのところで, unsafeInterLeaveIOを使って強制的にアクションを遅延させることで解消,
@@ -83,20 +63,15 @@ VArrのデストラクタとして働く
 unArr
 を追加
 
-typeTableへの追加は終わり, 
-valueTableへの追加で型エラーが発生し謎
-主にEvalのコンストラクタMkEvalを意識できていなかったことが原因
-
 runEvalWithを追加
-MkEvalを外すためだけの unEval を追加
+(MkEvalを外すためだけの unEval を追加)
 
 runEvalを使わない実装に調整
 
 
-
-bwdがバグりまくり問題
 unsafeInterLeaveIOを除去してletを使わない定義で検証しても失敗
 Array使ってないプログラムでも失敗してるのはなぜ???
+
 
 
 Todo
