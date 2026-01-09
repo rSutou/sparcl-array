@@ -139,7 +139,7 @@ def test0readMArray2 (rev ()) =
 sig unsafetest0readMArray3 : rev () -o rev Int
 def unsafetest0readMArray3 ru =
 	let rev marr <- newMArray eqInt 3 1 ru in
-	let rev (e, marr) <- readMArray eqInt 1 marr  in
+	let rev (e, marr) <- readMArray eqInt 1 marr in
 	-- let rev marr <- invert (readMArray eqInt 1) (rev (e, marr)) in
 	let rev () <- deleteMArray eqInt 3 1 marr in
 	e
@@ -176,8 +176,8 @@ def test0swapMArray1 (rev ()) =
 	rev ()
 
 
-sig fail0swapMArray2 : rev () -o rev ()
-def fail0swapMArray2 (rev ()) =
+sig test0swapMArray2 : rev () -o rev ()
+def test0swapMArray2 (rev ()) =
 	let rev marr <- newMArray eqInt 3 1 (rev ()) in
 	let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
 	let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
