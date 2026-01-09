@@ -329,15 +329,27 @@ baseModuleInfo = ModuleInfo {
           newMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> avar *-> revTy unitTy -@ revTy (marrayBodyTy avar) ),
+            let pname = BoundTv $ Local $ User "p" in
+            let pvar = TyVar pname in 
+            let qname = BoundTv $ Local $ User "q" in
+            let qvar = TyVar qname in 
+            TyForAll [aname, pname, qname] (TyQual [] $ (tyarr pvar avar $ tyarr qvar avar boolTy) -@ intTy *-> avar *-> revTy unitTy -@ revTy (marrayBodyTy avar) ),
           deleteMArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> avar *-> revTy (marrayBodyTy avar) -@ revTy unitTy ),
+            let pname = BoundTv $ Local $ User "p" in
+            let pvar = TyVar pname in 
+            let qname = BoundTv $ Local $ User "q" in
+            let qvar = TyVar qname in 
+            TyForAll [aname, pname, qname] (TyQual [] $ (tyarr pvar avar $ tyarr qvar avar boolTy) -@ intTy *-> avar *-> revTy (marrayBodyTy avar) -@ revTy unitTy ),
           readMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
-            TyForAll [aname] (TyQual [] $ (avar -@ avar -@ boolTy) -@ intTy *-> revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
+            let pname = BoundTv $ Local $ User "p" in
+            let pvar = TyVar pname in 
+            let qname = BoundTv $ Local $ User "q" in
+            let qvar = TyVar qname in 
+            TyForAll [aname, pname, qname] (TyQual [] $ (tyarr pvar avar $ tyarr qvar avar boolTy) -@ intTy *-> revTy (marrayBodyTy avar) -@ revTy (tupleTy [avar, marrayBodyTy avar]) ),
           swapMArray |-> 
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in 
@@ -500,14 +512,14 @@ baseModuleInfo = ModuleInfo {
                         (ioa, len) <- return $ unMArr varr
                         oldv <- MkEval $ liftIO $ readArray ioa n'
                         newv <- f0 $ singletonHeap a oldv
-                        MkEval $ liftIO $ writeArray ioa n' newv
+                        () <- MkEval $ liftIO $ writeArray ioa n' newv
                         return varr
                 let b' v = do
                         (ioa, len) <- return $ unMArr v
                         newv <- MkEval $ liftIO $ readArray ioa n'
                         hp <- b0 newv
                         oldv <- lookupHeap a hp
-                        MkEval $ liftIO $ writeArray ioa n' oldv
+                        () <- MkEval $ liftIO $ writeArray ioa n' oldv
                         ba v
                 return $ VRes f' b'),
           lengthMArray |->
