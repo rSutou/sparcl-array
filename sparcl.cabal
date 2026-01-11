@@ -32,7 +32,8 @@ common deps
       deepseq ^>= 1.4 || ^>= 1.5, 
       clock >= 0.6 && < 0.9, 
       fail ^>= 4.9, 
-      ansi-wl-pprint ^>= 0.6
+      ansi-wl-pprint ^>= 0.6,
+      vector ^>= 0.13
 
   ghc-options: 
       -Wall 

@@ -15,12 +15,14 @@ import           Control.Monad.Fail
 import           Control.Monad.Fix         (MonadFix(..))
 
 import           Data.Array.IO (IOArray, mapArray)
+import           Data.Vector.Mutable (MVector (MVector), IOVector, clone)
 
 data Value = VCon !Name ![Value]
            | VLit !Literal
            | VFun !(Value -> Eval Value)
            | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
-           | VMArr !(IOArray Int Value) !Int
+           | VMArr !StateAddr !(IOVector Value)
+           | VStat !State
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
 newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix, MonadIO)
@@ -50,6 +52,7 @@ instance NFData Value where
   rnf (VFun _)    = ()
   rnf (VRes _ _)  = ()
   rnf (VMArr _ _) = ()
+  rnf (VStat _) = ()
 
 
 instance Pretty Value where
@@ -61,6 +64,7 @@ instance Pretty Value where
   pprPrec _ (VFun _) = D.text "<function>"
   pprPrec _ (VRes _ _) = D.text "<reversible computation>"
   pprPrec _ (VMArr _ _) = D.text "<mutable array>"
+  pprPrec _ (VStat _) = D.text "<state>"
 
 
 -- type Eval = ReaderT Int (Either String)
@@ -147,8 +151,44 @@ singletonHeap :: Addr -> Value -> Heap
 singletonHeap = M.singleton
 
 
-copyValue :: Value -> Eval Value
-copyValue (VMArr ioA size) = 
-  MkEval $ liftIO $ 
-  mapArray id ioA >>= (\arr -> return $ VMArr arr size)
-copyValue v = return v 
+-- copyValue :: Value -> Eval Value
+-- copyValue (VMArr sa iov) = 
+--   MkEval $ liftIO $ 
+--   clone iov >>= (\v -> return $ VMArr sa v)
+-- copyValue v = return v 
+
+
+
+newtype StateUnit = SArr (IOVector Value)
+
+type StateAddr = Int
+type State = (StateAddr, M.Map StateAddr StateUnit)
+
+emptyState :: State
+emptyState = (0, M.empty)
+
+isEmptyState :: State -> Bool
+isEmptyState (_, s) = null s
+
+singletonState :: StateAddr -> StateUnit -> State
+singletonState a v = (a+1, M.singleton a v)
+
+extendState :: StateUnit -> State -> (State, StateAddr)
+extendState su (i,s) = 
+  if isEmptyState (i,s) then (singletonState 0 su, 0) 
+  else ((i+1, M.insert i su s), i)
+
+eqByAddr :: StateUnit -> StateUnit -> Bool
+eqByAddr (SArr(MVector _ _ a1)) (SArr(MVector _ _ a2)) = a1 == a2
+
+lookUpState :: StateAddr -> State -> StateUnit
+lookUpState sa (_,s) = case M.lookup sa s of
+  Nothing -> rtError $ D.text "Undefined addr in the state"
+  Just v  -> v
+
+checkState :: StateAddr -> StateUnit -> State -> Bool
+checkState sa su s = eqByAddr su $ lookUpState sa s
+
+removeState :: StateAddr -> StateUnit -> State -> State
+removeState sa su (i,s) = 
+  if checkState sa su (i,s) then (i, M.delete sa s) else rtError $ D.text "The state has no designated array"
