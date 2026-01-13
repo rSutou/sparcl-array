@@ -22,6 +22,7 @@ data Value = VCon !Name ![Value]
            | VFun !(Value -> Eval Value)
            | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
            | VMArr !StateAddr !(IOVector Value)
+           | VIMArr !(IOVector Value)
            | VStat !State
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
