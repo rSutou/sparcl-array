@@ -151,4 +151,4 @@ copyValue :: Value -> Eval Value
 copyValue (VMArr ioA size) = 
   MkEval $ liftIO $ 
   mapArray id ioA >>= (\arr -> return $ VMArr arr size)
-copyValue v = return v 
+copyValue v = return v  
