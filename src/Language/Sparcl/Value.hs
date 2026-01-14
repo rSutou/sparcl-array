@@ -12,8 +12,8 @@ import           Language.Sparcl.Literal
 import           Language.Sparcl.Name
 
 import           Control.Monad.Fail
-import           Control.Monad.Fix         (MonadFix (..))
-
+import           Control.Monad.Fix         (MonadFix(..))
+import Control.Applicative (Alternative)
 import           Data.Array.IO (IOArray, mapArray)
 import           Data.Vector.Mutable (MVector (MVector), IOVector, clone)
 
@@ -26,7 +26,7 @@ data Value = VCon !Name ![Value]
            | VStat !State
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
-newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix, MonadIO)
+newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Alternative, Monad, MonadReader Int, MonadFix, MonadIO)
 
 -- runEval :: Eval a -> a
 -- runEval (MkEval a) = runReader a 0
