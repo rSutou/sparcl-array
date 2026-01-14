@@ -569,7 +569,7 @@ baseModuleInfo = ModuleInfo {
                     i <- return $ min n' len
                     sl1 <- return $ slice 0 i iov
                     el2 <- liftIO $ V.read iov n'
-                    sl3 <- return $ slice (i+1) (len - i) iov
+                    sl3 <- return $ slice (i+1) (len - i - 1) iov
                     return $ VCon (nameTuple 3) [VMArr sa sl1, el2, VMArr sa sl3] in
               let b' v = do
                     (sl1, el2, sl3) <- return $ unPair3 v
