@@ -104,20 +104,20 @@ sig make111 : rev State -o rev (MArray Int, State)
 def make111 = newMArray eqInt 3 1 (rev ())
 
 sig arrayHead : MArray a -> a
-def arrayHead = unlinearReadMArray 0
+def arrayHead = nonlinearReadMArray 0
 
 
 sig toTuple2 : MArray Int -> (Int,Int)
 def toTuple2 arr = 
-	let e1 <- unlinearReadMArray 0 arr in 
-	let e2 <- unlinearReadMArray 1 arr in (e1,e2)
+	let e1 <- nonlinearReadMArray 0 arr in 
+	let e2 <- nonlinearReadMArray 1 arr in (e1,e2)
 
 
 sig toTuple3 : MArray Int -> (Int,Int,Int)
 def toTuple3 arr =
-	let e1 <- unlinearReadMArray 0 arr in 
-	let e2 <- unlinearReadMArray 1 arr in 
-	let e3 <- unlinearReadMArray 2 arr in (e1,e2,e3)
+	let e1 <- nonlinearReadMArray 0 arr in 
+	let e2 <- nonlinearReadMArray 1 arr in 
+	let e3 <- nonlinearReadMArray 2 arr in (e1,e2,e3)
 
 
 sig newIntArray : Int -> Int -> rev () -o rev State -o rev (MArray Int, State)
