@@ -39,7 +39,8 @@ import           Language.Sparcl.Surface.Parsing
 -- import Control.Exception (Exception, throw)
 
 import           Data.Array.MArray
-import           Data.Vector.Mutable as V
+import           Data.Vector as V (generateM, (!), freeze, thaw, length, ifoldM', unsafeFreeze)
+import           Data.Vector.Mutable as MV
 import qualified Control.Monad.Reader as R
 import Debug.Trace (traceIO)
 import GHC.RTS.Flags (ProfFlags(retainerSelector))
@@ -258,11 +259,7 @@ baseModuleInfo = ModuleInfo {
     leRational = base "leRational"
     ltRational = base "ltRational"
 
-    newMArray = base "newMArray"
-    nonlinearRead = base "nonlinearReadMArray"
-    -- readMArray = base "readMArray"
-    -- swapMArray = base "swapMArray"
-    -- modifyMArray = base "modifyMArray"
+    nonlinearRead = base "nonlinearRead"
     lengthMArray = base "lengthMArray"
 
     slice2 = base "slice2"
@@ -270,7 +267,9 @@ baseModuleInfo = ModuleInfo {
     freezeMArray = base "freezeMArray"
     name_generate = base "generate"
 
-    withStat = base "withStat"
+    withH = base "withH"
+    revSTPure = base "pureRST"
+    revSTBind = base "bindRST"
 
     forceDeRev = base "forceDeRev"
 
@@ -283,8 +282,8 @@ baseModuleInfo = ModuleInfo {
 
     unMArr (VMArr sa offset size) = (sa, offset, size)
     unMArr _                = cannotHappen $ text "Not a mutable array"
-    unIArr (VIArr iov) = iov
-    unIArr _           = cannotHappen $ text "Not a immutable array"
+    -- unIArr (VIArr iov) = iov
+    -- unIArr _           = cannotHappen $ text "Not a immutable array"
     unUnit (VCon c []) | c == nameTuple 0 = ()
     unUnit _                              = cannotHappen $ text "Not a unit"
     unBool (VCon c []) | c == conTrue  = True
@@ -341,18 +340,9 @@ baseModuleInfo = ModuleInfo {
 
 
           nameTyHeapState |-> typeKi,
+          nameTyRevSTMonad |-> typeKi `arrKi` typeKi,
           nameTyMArray |-> typeKi `arrKi` typeKi,
           nameTyIArray |-> typeKi `arrKi` typeKi,
-          -- newMArray |->
-          --   let aname = BoundTv $ Local $ User "a" in
-          --   let avar = TyVar aname in
-          --   let pname = BoundTv $ Local $ User "p" in
-          --   let pvar = TyVar pname in
-          --   let qname = BoundTv $ Local $ User "q" in
-          --   let qvar = TyVar qname in
-          --   TyForAll [aname, pname, qname]
-          --     (TyQual []
-          --     $ tyarr pvar avar (tyarr qvar avar boolTy) *-> intTy *-> avar *-> revTy unitTy -@ effectMonadTy (marrayBodyTy avar)),
           nonlinearRead |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
@@ -380,21 +370,19 @@ baseModuleInfo = ModuleInfo {
             let avar = TyVar aname in
             TyForAll [aname]
             $ TyQual []
-              $ intTy *-> revTy (marrayBodyTy avar) -@ effectMonadTy (tupleTy [marrayBodyTy avar, avar, marrayBodyTy avar]),
-          withStat |->
+              $ intTy *-> revTy (marrayBodyTy avar) -@ revSTMonadTy (tupleTy [marrayBodyTy avar, avar, marrayBodyTy avar]),
+          withH |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
-            let bname = BoundTv $ Local $ User "b" in
-            let bvar = TyVar bname in
-            TyForAll [aname, bname]
+            TyForAll [aname]
             $ TyQual []
-              $ (revTy avar -@ effectMonadTy bvar) -@ revTy avar -@ revTy bvar,
+              $ revSTMonadTy avar -@ revTy avar,
           freezeMArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
             TyForAll [aname]
             $ TyQual []
-              $ revTy (marrayBodyTy avar) -@ effectMonadTy (iarrayBodyTy avar),
+              $ revTy (marrayBodyTy avar) -@ revSTMonadTy (iarrayBodyTy avar),
           name_generate |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
@@ -406,8 +394,22 @@ baseModuleInfo = ModuleInfo {
             let rvar = TyVar rname in
             TyForAll [aname, pname, qname, rname]
             $ TyQual []
-              $ tyarr pvar avar (tyarr qvar avar boolTy) *->intTy *-> tyarr rvar intTy avar *-> revTy (iarrayBodyTy avar),
+              $ tyarr pvar avar (tyarr qvar avar boolTy) *-> intTy *-> tyarr rvar intTy avar *-> revTy unitTy -@ revTy (iarrayBodyTy avar),
 
+          revSTPure |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in
+            TyForAll [aname]
+            $ TyQual []
+              $ revTy avar -@ revSTMonadTy avar,
+          revSTBind |-> 
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in
+            let bname = BoundTv $ Local $ User "b" in
+            let bvar = TyVar bname in
+            TyForAll [aname]
+            $ TyQual []
+              $ revSTMonadTy avar -@ (revTy avar -@ revSTMonadTy bvar) -@ revSTMonadTy bvar,
 
 
           -- back door
@@ -457,48 +459,17 @@ baseModuleInfo = ModuleInfo {
           leRational |-> VFun (\n -> return $ VFun $ \m -> return $ fromBool $ ((<=) `on` unRat) n m),
           ltRational |-> VFun (\n -> return $ VFun $ \m -> return $ fromBool $ ((<)  `on` unRat) n m),
 
-          -- newMArray |->
-          --   VFun (\eq -> return $ VFun $ \n -> return $ VFun $ \a -> return $ VFun $
-          --     \vu -> return $ VFun $ \vs -> do 
-          --       liftIO $ traceIO "in newMArray"
-          --       let (fu, bu) = unRes vu 
-          --       let (fs, bs) = unRes vs 
-          --       let n' = unInt n 
-          --       let f' hp = do
-          --             unUnit <$> fu hp
-          --             VHSt s <- fs hp
-          --             newiov <- MkEval $ liftIO $ V.replicate n' a
-          --             (news, newa) <- return $ extendHeapState (SArr newiov) s
-          --             return $ VCon (nameTuple 2) [VMArr newa newiov, VHSt news] 
-          --       let b' v = do
-          --             liftIO $ traceIO "before unPair in b'"
-          --             (va, VHSt s) <- return $ unPair v
-          --             liftIO $ traceIO "after unPair in b'"
-          --             (sa, iov) <- return $ unMArr va
-          --             VFun eq2 <- return $ eq
-          --             VFun eq1 <- eq2 $ a
-          --             SArr pa <- return $ lookUpHeapState sa s
-          --             True <- return $ eqByAddr (SArr pa) (SArr iov)
-          --             True <- return $ V.length pa == V.length iov
-          --             MkEval $ do
-          --                       i <- R.ask
-          --                       i' <- liftIO $ foldrM' (\a' i' -> do
-          --                                                         r <- runEvalWith i' $ eq1 a'
-          --                                                         True <- return $ unBool r
-          --                                                         return i') i iov
-          --                       R.local (const i') (return ())
-          --             let news = removeHeapState sa (SArr iov) s
-          --             hp1 <- bu unitVal
-          --             hp2 <- bs (VHSt news)
-          --             return $ unionHeap hp1 hp2 
-          --       return $ VRes f' b'),
 
           nonlinearRead |->
             VFun (\n -> return $ VFun $ \va ->
-              let iov = unIArr va in
               let n' = unInt n in
-              liftIO $ V.read iov n'),
-
+              case va of
+              (VIArr v) -> return $ v V.! n'
+              (VISli hp hpa off size) -> do
+                                          let SArr iov = lookUpHeapState hpa hp 
+                                          guard $ 0 <= n' && n' < size
+                                          liftIO $ MV.read iov (off + n')
+              _ -> rtError $ cannotHappen $ text "Not an immutable array."),
           lengthMArray |->
             VFun (\vrarr ->
               let (fa, ba) = unRes vrarr in
@@ -519,17 +490,17 @@ baseModuleInfo = ModuleInfo {
               let n' = unInt n in
               let (fa, ba) = unRes va in
               let f' hp = do
-                    (sa, off, size) <- unMArr <$> fa hp
-                    guard (0 < n' && n' < size)
-                    let sl1 = VMArr sa off n'
-                    let sl2 = VMArr sa (off + n') (size - n')
+                    (hsa, off, size) <- unMArr <$> fa hp
+                    guard (0 <= n' && n' <= size)
+                    let sl1 = VMArr hsa off n'
+                    let sl2 = VMArr hsa (off + n') (size - n')
                     return $ VCon (nameTuple 2) [sl1, sl2] in
               let b' v = do
                     let (sl1,sl2) = unPair v
-                    let (sa1, off1, size1) = unMArr sl1
-                    let (sa2, off2, size2) = unMArr sl2
-                    guard (sa1 == sa2 && off1 + size1 == off2)
-                    ba $ VMArr sa1 off1 (size1 + size2)
+                    let (hsa1, off1, size1) = unMArr sl1
+                    let (hsa2, off2, size2) = unMArr sl2
+                    guard (hsa1 == hsa2 && off1 + size1 == off2)
+                    ba $ VMArr hsa1 off1 (size1 + size2)
                     in
               return $ VRes f' b'),
           sliceAt1 |->
@@ -538,31 +509,30 @@ baseModuleInfo = ModuleInfo {
               let (fa, ba) = unRes va in
               let (fhs, bhs) = unRes vrhs in
               let f' hp = do
-                    (sa, off, size) <- unMArr <$> fa hp
+                    (hsa, off, size) <- unMArr <$> fa hp
                     VHSt hs <- fhs hp
-                    let sl1 = VMArr sa off n'
-                    let (SArr iov) = lookUpHeapState sa hs
-                    el2 <- liftIO $ V.read iov (off + n')
-                    let sl3 = VMArr sa (off + n' + 1) (size - n' - 1)
+                    let sl1 = VMArr hsa off n'
+                    let (SArr iov) = lookUpHeapState hsa hs
+                    el2 <- liftIO $ MV.read iov (off + n')
+                    let sl3 = VMArr hsa (off + n' + 1) (size - n' - 1)
                     return $ VCon (nameTuple 2) [VCon (nameTuple 3) [sl1, el2, sl3], VHSt hs] in
               let b' v = do
                     let (vslices, VHSt vhs) = unPair v
                     let (sl1, el2, sl3) = unPair3 vslices
-                    let (sa1, off1, size1) = unMArr sl1
-                    let (sa3, off3, size3) = unMArr sl3
-                    guard (sa1 == sa3 && off1 + size1 + 1 == off3) 
-                    let SArr iov = lookUpHeapState sa1 vhs
-                    liftIO $ V.write iov (off1 + n') el2
-                    hp1 <- ba $ VMArr sa1 off1 (size1 + size3 + 1)
+                    let (hsa1, off1, size1) = unMArr sl1
+                    let (hsa3, off3, size3) = unMArr sl3
+                    guard (hsa1 == hsa3 && n' == size1 && off1 + size1 + 1 == off3) 
+                    let SArr iov = lookUpHeapState hsa1 vhs
+                    liftIO $ MV.write iov (off1 + n') el2
+                    hp1 <- ba $ VMArr hsa1 off1 (size1 + size3 + 1)
                     hp2 <- bhs $ VHSt vhs
                     return $ unionHeap hp1 hp2
                     in
               return $ VRes f' b'),
 
-          withStat |->
-            VFun (\(VFun fea) -> return $ VFun $ \vra -> do
-                VFun fe <- fea vra
-                (f'',b'') <- unRes <$> fe (VRes (\h -> return $ VHSt emptyHeapState) (\(VHSt s) -> do True <- return $ isEmptyHeapState s; return $ emptyHeap))
+          withH |->
+            VFun (\(VFun f) -> do
+                (f'',b'') <- unRes <$> f (VRes (\h -> return $ VHSt emptyHeapState) (\(VHSt s) -> do guard $ isEmptyHeapState s; return $ emptyHeap))
                 let f = f'' >=> (\x -> do { let {(r,VHSt h) = unPair x}; guard (isEmptyHeapState h); pure r})
                 let b = (\r -> pure $ VCon (nameTuple 2) [r, VHSt emptyHeapState]) >=> b'' 
                 pure $ VRes f b 
@@ -575,58 +545,82 @@ baseModuleInfo = ModuleInfo {
               let (fhs, bhs) = unRes vrhs in
               let f' hp = do
                     varr <- fma hp
-                    let (sa, off, size) = unMArr varr
-                    VHSt s <- fhs hp
-                    let SArr pa = lookUpHeapState sa s
-                    guard $ V.length pa == size
-                    let news = removeHeapState sa (SArr pa) s
-                    return $ VCon (nameTuple 2) [VIArr pa, VHSt news] in
+                    let (hsa, _, size) = unMArr varr
+                    VHSt hs <- fhs hp
+                    let SArr pa = lookUpHeapState hsa hs
+                    guard $ MV.length pa == size
+                    let newhs = removeHeapState hsa hs
+                    imv <- liftIO $ V.freeze pa
+                    -- imv <- liftIO $ V.unsafeFreeze pa
+                    return $ VCon (nameTuple 2) [VIArr imv, VHSt newhs] in
               let b' v = do
-                    (VIArr iov, VHSt s) <- return $ unPair v
-                    (news, newa) <- return $ extendHeapState (SArr iov) s
-                    hp1 <- bma (VMArr newa 0 (V.length iov))
+                    let (VIArr imv, VHSt s) = unPair v
+                    let size = V.length imv
+                    mv <- liftIO $ V.thaw imv
+                    let (news, newa) = extendHeapState (SArr mv) s
+                    hp1 <- bma (VMArr newa 0 size)
                     hp2 <- bhs (VHSt news)
                     return $ unionHeap hp1 hp2 in
               return $ VRes f' b'),
 
-
-
           name_generate |->
-            VFun (\eq -> return $ VFun $ \n -> return $ VFun $ \vg -> return $ VFun $
-              \vu -> return $ VFun $ \vs -> do 
-                -- liftIO $ traceIO "in newMArray"
+            VFun (\eq -> return $ VFun $ \n -> return $ VFun $ \vg -> return $ VFun $ \vu -> do 
+                let VFun eq2 = eq
                 let VFun g = vg 
                 let (fu, bu) = unRes vu 
-                let (fs, bs) = unRes vs 
                 let n' = unInt n 
                 let f' hp = do
-                      unUnit <$> fu hp
-                      VHSt s <- fs hp
-                      newiov <- V.generateM n' (\ i -> g $ VLit $ LitInt i)
-                      (news, newa) <- return $ extendHeapState (SArr newiov) s
-                      return $ VCon (nameTuple 2) [VMArr newa newiov, VHSt news] 
+                      () <- unUnit <$> fu hp
+                      imv <- V.generateM n' (\ i -> g $ VLit $ LitInt i)
+                      return $ VIArr imv 
                 let b' v = do
-                      liftIO $ traceIO "before unPair in b'"
-                      (va, VHSt s) <- return $ unPair v
-                      liftIO $ traceIO "after unPair in b'"
-                      (sa, iov) <- return $ unMArr va
-                      VFun eq2 <- return $ eq
-                      VFun eq1 <- eq2 $ a
-                      SArr pa <- return $ lookUpHeapState sa s
-                      True <- return $ eqByAddr (SArr pa) (SArr iov)
-                      True <- return $ V.length pa == V.length iov
-                      MkEval $ do
-                                i <- R.ask
-                                i' <- liftIO $ foldrM' (\a' i' -> do
-                                                                  r <- runEvalWith i' $ eq1 a'
-                                                                  True <- return $ unBool r
-                                                                  return i') i iov
-                                R.local (const i') (return ())
-                      let news = removeHeapState sa (SArr iov) s
-                      hp1 <- bu unitVal
-                      hp2 <- bs (VHSt news)
-                      return $ unionHeap hp1 hp2 
+                      let VIArr imv = v
+                      lvl <- R.ask
+                      lvl' <- V.ifoldM' (\lvl'' i a1 -> do
+                                                        -- return lvl''
+                                                        VFun eq1 <- eq2 a1
+                                                        r <- g (VLit $ LitInt i) >>= eq1
+                                                        guard $ unBool r
+                                                        return lvl''
+                                                        ) lvl imv
+                      R.local (const lvl') (return ())
+                      bu unitVal
                 return $ VRes f' b'),
+          revSTPure |->
+            VFun (\vra -> return $ VFun $ \vrhs -> do
+              let (fa, ba) = unRes vra
+              let (fhs, bhs) = unRes vrhs
+              let f' hp = do
+                    va <- fa hp
+                    vhs <- fhs hp 
+                    return $ VCon (nameTuple 2) [va, vhs]
+              let b' v = do
+                    let (va, vhs) = unPair v
+                    hp1 <- ba va
+                    hp2 <- bhs vhs
+                    return $ unionHeap hp1 hp2
+              return $ VRes f' b'
+            ),
+          revSTBind |-> VFun (\vrst -> return $ VFun $ \vfab -> return $ VFun $ \vrhs -> do
+              let VFun frst = vrst
+              let VFun fab = vfab
+              (fahs, bahs) <- unRes <$> frst vrhs
+              newAddrs 2 (\as -> do 
+                let [a1, a2] = as
+                VFun fb <- fab (VRes (lookupHeap a1) (return . singletonHeap a1))
+                VRes f0 b0 <- fb (VRes (lookupHeap a2) (return . singletonHeap a2))
+                let f' hp = do
+                      (va, vhs) <- unPair <$> fahs hp
+                      f0 (extendHeap a2 vhs (extendHeap a1 va hp))
+                let b' v = do
+                      hp' <- b0 v
+                      va <- lookupHeap a1 hp'
+                      vhs <- lookupHeap a2 hp'
+                      let hp1 = removesHeap as hp'
+                      hp2 <- bahs $ VCon (nameTuple 2) [va, vhs]
+                      return $ unionHeap hp1 hp2
+                return $ VRes f' b')
+          ),
 
           forceDeRev |->
             VFun (\vr ->
@@ -646,17 +640,14 @@ baseModuleInfo = ModuleInfo {
     rationalTy = TyCon (base "Rational") []
     intTy = TyCon (base "Int") []
 
-    nameTyHeapState = base "HeapState"
+    nameTyRevSTMonad = base "RevST"
+    nameTyHeapState = base "H"
     nameTyMArray = base "MArray"
     nameTyIArray = base "IArray"
-    fromIOVec iov = VMArr iov
-    effectMonadTy avar = (revTy $ TyCon nameTyHeapState []) -@ (revTy $ tupleTy [avar, TyCon nameTyHeapState []])
+    -- revSTMonadTy avar = (revTy $ TyCon nameTyHeapState []) -@ (revTy $ tupleTy [avar, TyCon nameTyHeapState []])
+    revSTMonadTy avar = TyCon nameTyRevSTMonad [avar]
     marrayBodyTy avar = TyCon nameTyMArray [avar]
-    marrayTy = let aname = BoundTv $ Local $ User "a" in
-               TyForAll [aname] (TyQual [] $ marrayBodyTy (TyVar aname))
     iarrayBodyTy avar = TyCon nameTyIArray [avar]
-    iarrayTy = let aname = BoundTv $ Local $ User "a" in
-               TyForAll [aname] (TyQual [] $ iarrayBodyTy (TyVar aname))
     unitTy = tupleTy []
     unitVal = VCon (nameTuple 0) []
 

@@ -15,6 +15,7 @@ import           Control.Monad.Fail
 import           Control.Monad.Fix         (MonadFix(..))
 import Control.Applicative (Alternative)
 import           Data.Array.IO (IOArray, mapArray)
+import           Data.Vector          (Vector)
 import           Data.Vector.Mutable (MVector (MVector), IOVector, clone)
 
 data Value = VCon !Name ![Value]
@@ -22,7 +23,8 @@ data Value = VCon !Name ![Value]
            | VFun !(Value -> Eval Value)
            | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
            | VMArr !HeapStateAddr !Int !Int
-           | VIArr !(IOVector Value)
+           | VISli !HeapState !HeapStateAddr !Int !Int
+           | VIArr !(Vector Value)
            | VHSt !HeapState
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
@@ -53,6 +55,7 @@ instance NFData Value where
   rnf (VFun _)    = ()
   rnf (VRes _ _)  = ()
   rnf (VMArr _ _ _) = ()
+  rnf (VISli _ _ _ _) = ()
   rnf (VIArr _) = ()
   rnf (VHSt _) = ()
 
@@ -67,7 +70,8 @@ instance Pretty Value where
   pprPrec _ (VLit l) = ppr l
   pprPrec _ (VFun _) = D.text "<function>"
   pprPrec _ (VRes _ _) = D.text "<reversible computation>"
-  pprPrec _ (VMArr _ _ _) = D.text "<mutable array>"
+  pprPrec _ (VMArr {}) = D.text "<mutable array>"
+  pprPrec _ (VISli {}) = D.text "<immutable slice>"
   pprPrec _ (VIArr _) = D.text "<immutable array>"
   pprPrec _ (VHSt _) = D.text "<state>"
 
@@ -194,6 +198,6 @@ lookUpHeapState sa (_,s) = case M.lookup sa s of
 checkHeapState :: HeapStateAddr -> HeapStateUnit -> HeapState -> Bool
 checkHeapState sa su s = eqByAddr su $ lookUpHeapState sa s
 
-removeHeapState :: HeapStateAddr -> HeapStateUnit -> HeapState -> HeapState
-removeHeapState sa su (i,s) = 
-  if checkHeapState sa su (i,s) then (i, M.delete sa s) else rtError $ D.text "The state has no designated array"
+removeHeapState :: HeapStateAddr -> HeapState -> HeapState
+removeHeapState sa (i,s) = 
+  (i, M.delete sa s) 
