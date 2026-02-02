@@ -66,137 +66,184 @@ def (.) f g = \x -> f (g x)
 fixity . 90 right
 
 
--- monadicな実装用のテスト
-sig deleteMArray : (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o rev State -o rev ((), State)
-def deleteMArray eq size elm (rev arr) (rev st) = 
-	invert (\(rev((), st')) -> newMArray eq size elm (rev ()) st')  
-		   (rev (arr, st))
+-- bind operator
+sig (>>=) : forall a b. RevM a -o (rev a -o RevM b) -o RevM b
+def (>>=) a amb = bindRevM a amb
 
--- def deleteMArray eq size elm (rev arr) (rev st) = 
--- 	curryR $ invert $ uncurryR $ newMArray eq size elm 
+fixity >>= 1 left
 
-sig checkLength : (Int # p -> Bool) -> rev (MArray a) -o rev (Bool, MArray a)
-def checkLength g (rev arr) =
-	let rev (l, arr) <- lengthMArray arr in
+-- inverted functions
+sig invertM : forall a b. (rev a -o RevM b) -> (rev b -o RevM a)
+def invertM f = case unliftM f of (fw, bw) -> liftM bw fw end
+
+sig deleteIArray : forall a p q r. (a # p -> a # q -> Bool) -> Int -> (Int # r -> a) -> rev (IArray a) -o rev ()
+def deleteIArray eq size g = invert $ generate eq size g
+
+sig checkLengthI : forall a. rev Int -o rev (IArray a) -o rev (IArray a)
+def checkLengthI = curryR $ invert $ lengthIArray
+
+sig thaw : forall a. rev (IArray a) -o RevM (MArray a)
+def thaw = invertM freezeMArray
+
+sig combine2 : forall a. Int -> rev (MArray a) -o rev (MArray a) -o rev (MArray a)
+def combine2 = curryR . invert . slice2
+
+sig combineAt1 : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
+def combineAt1 = invertM . sliceAt1
+
+sig curriedCombineAt1 : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
+def curriedCombineAt1 i sl1 el2 sl3 = combineAt1 i (rev (sl1, el2, sl3))
+
+sig checkLengthM : forall a. rev Int -o rev (MArray a) -o rev (MArray a)
+def checkLengthM = curryR $ invert $ lengthMArray
+
+-- derived functions
+sig newMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev () -o RevM (MArray a)
+def newMArray eq size elm u = thaw $ generate eq size (\_ -> elm) u
+
+sig deleteMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o RevM ()
+def deleteMArray eq size elm = invertM $ newMArray eq size elm 
+
+sig withLengthI : forall a p. (Int # p -> Bool) -> rev (IArray a) -o rev (Bool, IArray a)
+def withLengthI g ia =
+	let rev (l, ia) <- lengthIArray ia in
 	let rev (l, b) <- pin l (\l' -> case g l' of True -> rev True | False -> rev False end) in
-	let rev arr <- invert lengthMArray $ rev (l, arr) in
-	rev (b, arr)
+	let rev ia <- checkLengthI l ia in
+	rev (b, ia)
 
-sig combine2 : Int -> rev (MArray a) -o rev (MArray a) -o rev (MArray a)
-def combine2 i (rev arr1) (rev arr2) = invert (slice2 i) (rev (arr1, arr2))
-
-sig combineAt1 : Int -> rev (MArray a) -o rev a -o rev (MArray a) -o rev (MArray a)
-def combineAt1 i (rev arr1) (rev elm2) (rev arr3) = invert (sliceAt1 i) (rev (arr1, elm2, arr3))
-
-sig swapMArray : Int -> rev a -o rev (MArray a) -o rev (a, MArray a)
-def swapMArray i (rev a) (rev arr) =
-	let rev (arr1, elm2, arr3) <- sliceAt1 i arr in
-	let rev arr <- combineAt1 i arr1 a arr3 in
-	rev (elm2, arr)
-
-sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o rev (MArray a)
-def modifyMArray i rf (rev arr) = 
-	let rev (arr1, elm2, arr3) <- sliceAt1 i arr in
-	let rev arr <- combineAt1 i arr1 (rf elm2) arr3 in
-	arr
-
-sig make111 : rev State -o rev (MArray Int, State)
-def make111 = newMArray eqInt 3 1 (rev ())
-
-sig arrayHead : MArray a -> a
-def arrayHead = nonlinearReadMArray 0
+sig withLengthM : forall a p. (Int # p -> Bool) -> rev (MArray a) -o rev (Bool, MArray a)
+def withLengthM g ma =
+	let rev (l, ma) <- lengthMArray ma in
+	let rev (l, b) <- pin l (\l' -> case g l' of True -> rev True | False -> rev False end) in
+	let rev ma <- checkLengthM l ma in
+	rev (b, ma)
 
 
-sig toTuple2 : MArray Int -> (Int,Int)
-def toTuple2 arr = 
-	let e1 <- nonlinearReadMArray 0 arr in 
-	let e2 <- nonlinearReadMArray 1 arr in (e1,e2)
+-- sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
+-- def swapMArray i a arr = 
+-- 		sliceAt1 i arr >>= 
+-- 		(\p3 -> case p3 of (rev (sl1,el2,sl3)) -> rev (el2, (sl1,a,sl3)) end (\(rev(sl1, el2, sl3)) -> combineAt1 i ) >>= (\ma -> pureRevM $ rev (el2, ma)))
+
+-- sig swapMArrayCPS : Int -> rev a -o rev (MArray a) -o (RevM (a, MArray a) -o rev b) -o rev b
+-- def swapMArrayCPS i a arr cf = 
+-- 		sliceAt1 i arr >>= 
+-- 		(\(rev (sl1,el2,sl3)) -> cf (curriedCombineAt1 i sl1 a sl3 >>= \ma -> pureRevM $ rev (el2, ma)))
 
 
-sig toTuple3 : MArray Int -> (Int,Int,Int)
-def toTuple3 arr =
-	let e1 <- nonlinearReadMArray 0 arr in 
-	let e2 <- nonlinearReadMArray 1 arr in 
-	let e3 <- nonlinearReadMArray 2 arr in (e1,e2,e3)
+sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
+def modifyMArray i f arr = 
+		sliceAt1 i arr >>= 
+		(\p3 -> combineAt1 i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
+		
+sig pinM' : forall a b. rev a -o (a -> RevM b) -o RevM (a,b)
+def pinM' ra = pinM (pureRevM ra)
+
+-- sig readPin : forall a b. Int -> rev (MArray a) -o (a -> rev b) -o RevM (MArray a, b)
+-- def readPin i ma =
+-- 		sliceAt1 i ma >>= 
 
 
-sig newIntArray : Int -> Int -> rev () -o rev State -o rev (MArray Int, State)
-def newIntArray = newMArray eqInt
 
-sig deleteIntArray : Int -> Int -> rev (MArray Int) -o rev State -o rev ((), State)
-def deleteIntArray = deleteMArray eqInt
 
-sig test0newdelete0 : rev () -o rev ()
-def test0newdelete0 =
-	withStat $ \unit (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 unit s in
-		let rev (unit', s) <- invert (uncurryR $ newMArray eqInt 3 1) (rev (marr, s)) in
-		rev (unit', s)
+
+-- monadicな実装用のテスト
+-- sig make111 : rev State -o rev (MArray Int, State)
+-- def make111 = newMArray eqInt 3 1 (rev ())
+
+-- sig arrayHead : MArray a -> a
+-- def arrayHead = nonlinearReadMArray 0
+
+
+-- sig toTuple2 : MArray Int -> (Int,Int)
+-- def toTuple2 arr = 
+-- 	let e1 <- nonlinearReadMArray 0 arr in 
+-- 	let e2 <- nonlinearReadMArray 1 arr in (e1,e2)
+
+
+-- sig toTuple3 : MArray Int -> (Int,Int,Int)
+-- def toTuple3 arr =
+-- 	let e1 <- nonlinearReadMArray 0 arr in 
+-- 	let e2 <- nonlinearReadMArray 1 arr in 
+-- 	let e3 <- nonlinearReadMArray 2 arr in (e1,e2,e3)
+
+
+-- sig newIntArray : Int -> Int -> rev () -o rev State -o rev (MArray Int, State)
+-- def newIntArray = newMArray eqInt
+
+-- sig deleteIntArray : Int -> Int -> rev (MArray Int) -o rev State -o rev ((), State)
+-- def deleteIntArray = deleteMArray eqInt
+
+-- sig test0newdelete0 : rev () -o rev ()
+-- def test0newdelete0 =
+-- 	withStat $ \unit (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 unit s in
+-- 		let rev (unit', s) <- invert (uncurryR $ newMArray eqInt 3 1) (rev (marr, s)) in
+-- 		rev (unit', s)
 	
-sig test0newdelete1 : rev () -o rev ()
-def test0newdelete1 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- invert (uncurryR $ deleteMArray eqInt 3 1) (rev (rev (), s)) in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
-		rev (rev (), s)
+-- sig test0newdelete1 : rev () -o rev ()
+-- def test0newdelete1 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- invert (uncurryR $ deleteMArray eqInt 3 1) (rev (rev (), s)) in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
+-- 		rev (rev (), s)
 
 
-sig test0newdelete2 : rev () -o rev ()
-def test0newdelete2 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev (unit', s) <- invert (uncurryR $ newMArray eqInt 3 1) (rev (marr, s)) in
-		rev (unit', s)
+-- sig test0newdelete2 : rev () -o rev ()
+-- def test0newdelete2 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev (unit', s) <- invert (uncurryR $ newMArray eqInt 3 1) (rev (marr, s)) in
+-- 		rev (unit', s)
 
-sig test0modifyMArray0 : rev () -o rev ()
-def test0modifyMArray0 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev marr <- modifyMArray 1 (\x -> x) marr in
-		let rev marr <- modifyMArray 1 (\x -> x) marr in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
-		rev (rev (), s)
+-- sig test0modifyMArray0 : rev () -o rev ()
+-- def test0modifyMArray0 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev marr <- modifyMArray 1 (\x -> x) marr in
+-- 		let rev marr <- modifyMArray 1 (\x -> x) marr in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
+-- 		rev (rev (), s)
 
-sig swapMArrayPair : Int -> rev (a, MArray a) -o rev (a, MArray a)
-def swapMArrayPair i (rev (a, ma)) = swapMArray i a ma
+-- sig swapMArrayPair : Int -> rev (a, MArray a) -o rev (a, MArray a)
+-- def swapMArrayPair i (rev (a, ma)) = swapMArray i a ma
 
-sig test0swapMArray0 : rev () -o rev ()
-def test0swapMArray0 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
-		let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
-		let rev () <- delete eqInt 4 e4 in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr1 s in
-		rev (rev(), s) 
+-- sig test0swapMArray0 : rev () -o rev ()
+-- def test0swapMArray0 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
+-- 		let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
+-- 		let rev () <- delete eqInt 4 e4 in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr1 s in
+--		rev (rev(), s) 
 
-sig test0swapMArray1 : rev () -o rev ()
-def test0swapMArray1 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
-		let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
-		let rev () <- delete eqInt 4 e in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
-		rev (rev (), s)
+-- sig test0swapMArray1 : rev () -o rev ()
+-- def test0swapMArray1 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
+-- 		let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
+-- 		let rev () <- delete eqInt 4 e in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
+-- 		rev (rev (), s)
 
 
-sig test0swapMArray2 : rev () -o rev ()
-def test0swapMArray2 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
-		let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
-		let rev () <- delete eqInt 4 e in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
-		rev (rev (), s)
+-- sig test0swapMArray2 : rev () -o rev ()
+-- def test0swapMArray2 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev (e, marr) <- swapMArray 1 (const eqInt 4) marr in
+-- 		let rev (e, marr) <- invert (uncurryR (swapMArray 1)) (rev (e, marr)) in
+-- 		let rev () <- delete eqInt 4 e in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr s in
+-- 		rev (rev (), s)
 	
-sig test0swapMArray3 : rev () -o rev ()
-def test0swapMArray3 =
-	withStat $ \(rev ()) (rev s) ->
-		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
-		let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
-		let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
-		let rev () <- delete eqInt 4 e4 in
-		let rev ((), s) <- deleteMArray eqInt 3 1 marr1 s in
-		rev (rev (), s) 
+-- sig test0swapMArray3 : rev () -o rev ()
+-- def test0swapMArray3 =
+-- 	withStat $ \(rev ()) (rev s) ->
+-- 		let rev (marr, s) <- newMArray eqInt 3 1 (rev ()) s in
+-- 		let rev (e1, marr4) <- swapMArray 1 (const eqInt 4) marr in
+-- 		let rev (e4, marr1) <- swapMArray 1 e1 marr4 in
+-- 		let rev () <- delete eqInt 4 e4 in
+-- 		let rev ((), s) <- deleteMArray eqInt 3 1 marr1 s in
+-- 		rev (rev (), s) 
