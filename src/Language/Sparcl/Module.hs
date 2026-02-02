@@ -502,7 +502,7 @@ baseModuleInfo = ModuleInfo {
             let bvar = TyVar bname in
             TyForAll [aname, bname]
             $ TyQual []
-              $ (avar *-> monadTy bvar) *-> (bvar *-> monadTy avar) *-> (revTy avar *-@ revMonadTy avar),
+              $ (avar *-> monadTy bvar) *-> (bvar *-> monadTy avar) *-> (revTy avar *-@ revMonadTy bvar),
 
 
 
@@ -824,7 +824,6 @@ baseModuleInfo = ModuleInfo {
             VFun (\vr ->
               let (f, b) = unRes vr in
               f emptyHeap)
-
           ]
 
     names = M.keys typeTable ++ M.keys conTable
