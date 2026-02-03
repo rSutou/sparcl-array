@@ -287,6 +287,8 @@ baseModuleInfo = ModuleInfo {
     unliftM = base "unliftM"
     liftM = base "liftM"
 
+    bindRev2 = base "bindRev2"
+
     forceDeRev = base "forceDeRev"
 
     unInt  (VLit (LitInt n)) = n
@@ -503,6 +505,17 @@ baseModuleInfo = ModuleInfo {
             TyForAll [aname, bname]
             $ TyQual []
               $ (avar *-> monadTy bvar) *-> (bvar *-> monadTy avar) *-> (revTy avar *-@ revMonadTy bvar),
+
+          bindRev2 |->
+            let aname = BoundTv $ Local $ User "a" in
+            let avar = TyVar aname in
+            let bname = BoundTv $ Local $ User "b" in
+            let bvar = TyVar bname in
+            let cname = BoundTv $ Local $ User "c" in
+            let cvar = TyVar cname in
+            TyForAll [aname, bname, cname]
+            $ TyQual []
+              $ revTy (tupleTy [avar, bvar]) *-@ (revTy avar *-@ revTy bvar *-@ revMonadTy cvar) *-@ revMonadTy cvar,
 
 
 
@@ -817,6 +830,27 @@ baseModuleInfo = ModuleInfo {
                       (va, vhs') <- unPair <$> ma vhs
                       hp1 <- ba va
                       hp2 <- bhs vhs'
+                      return $ unionHeap hp1 hp2
+                return $ VRes f' b'),
+
+          bindRev2 |->
+            VFun (\vrab -> return $ VFun $ \vf2 -> return $ VFun $ \vrhs -> do
+              let (fab, bab) = unRes vrab
+              let VFun f2 = vf2
+              newAddrs 2 $ \as -> do
+                let [a1, a2] = as
+                VFun f1 <- f2 (VRes (lookupHeap a1) (return . singletonHeap a1))
+                VFun frmc <- f1 (VRes (lookupHeap a2) (return . singletonHeap a2))
+                VRes f0 b0 <- f1 vrhs
+                let f' hp = do
+                      (va, vb) <- unPair <$> fab hp
+                      f0 (extendHeap a2 vb (extendHeap a1 va hp))
+                let b' v = do
+                      hp' <- b0 v
+                      va <- lookupHeap a1 hp'
+                      vb <- lookupHeap a2 hp'
+                      let hp1 = removesHeap as hp'
+                      hp2 <- bab $ VCon (nameTuple 2) [va, vb]
                       return $ unionHeap hp1 hp2
                 return $ VRes f' b'),
 
