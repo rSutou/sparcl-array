@@ -119,15 +119,6 @@ def withLengthM g ma =
 	rev (b, ma)
 
 
--- sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
--- def swapMArray i a arr = 
--- 		sliceAt1 i arr >>= 
--- 		(\p3 -> case p3 of (rev (sl1,el2,sl3)) -> rev (el2, (sl1,a,sl3)) end (\(rev(sl1, el2, sl3)) -> combineAt1 i ) >>= (\ma -> pureRevM $ rev (el2, ma)))
-
--- sig swapMArrayCPS : Int -> rev a -o rev (MArray a) -o (RevM (a, MArray a) -o rev b) -o rev b
--- def swapMArrayCPS i a arr cf = 
--- 		sliceAt1 i arr >>= 
--- 		(\(rev (sl1,el2,sl3)) -> cf (curriedCombineAt1 i sl1 a sl3 >>= \ma -> pureRevM $ rev (el2, ma)))
 
 
 sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
@@ -137,6 +128,20 @@ def modifyMArray i f arr =
 		
 sig pinM' : forall a b. rev a -o (a -> RevM b) -o RevM (a,b)
 def pinM' ra = pinM (pureRevM ra)
+
+
+sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
+def swapMArray i a arr = 
+		sliceAt1 i arr >>= 
+		(\p3 -> bindRev2 
+				(case p3 of (rev (sl1,el2,sl3)) -> rev (el2, rev (sl1,a,sl3)) end) 
+				(\el2 -> \p3 -> combineAt1 i p3 >>= (\ma -> pureRevM $ rev (el2, ma))))
+
+-- sig swapMArrayCPS : Int -> rev a -o rev (MArray a) -o (RevM (a, MArray a) -o rev b) -o rev b
+-- def swapMArrayCPS i a arr cf = 
+-- 		sliceAt1 i arr >>= 
+-- 		(\(rev (sl1,el2,sl3)) -> cf (curriedCombineAt1 i sl1 a sl3 >>= \ma -> pureRevM $ rev (el2, ma)))
+
 
 -- sig readPin : forall a b. Int -> rev (MArray a) -o (a -> rev b) -o RevM (MArray a, b)
 -- def readPin i ma =
