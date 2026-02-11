@@ -120,7 +120,7 @@ def eqNat Z Z = True
 		| Z (S _) = False
 		| (S a) (S b) = eqNat a b
 
-sig add : Nat -> rev Nat -o rev Nat
+sig add : Nat -o rev Nat -o rev Nat
 def add Z y = y
 		| (S x) y = rev S (add x y)
 
