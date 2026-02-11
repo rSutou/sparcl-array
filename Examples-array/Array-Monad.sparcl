@@ -137,11 +137,6 @@ def swapMArray i a arr =
 				(case p3 of (rev (sl1,el2,sl3)) -> rev (el2, rev (sl1,a,sl3)) end) 
 				(\el2 -> \p3 -> combineAt1 i p3 >>= (\ma -> pureRevM $ rev (el2, ma))))
 
--- sig swapMArrayCPS : Int -> rev a -o rev (MArray a) -o (RevM (a, MArray a) -o rev b) -o rev b
--- def swapMArrayCPS i a arr cf = 
--- 		sliceAt1 i arr >>= 
--- 		(\(rev (sl1,el2,sl3)) -> cf (curriedCombineAt1 i sl1 a sl3 >>= \ma -> pureRevM $ rev (el2, ma)))
-
 
 -- sig readPin : forall a b. Int -> rev (MArray a) -o (a -> rev b) -o RevM (MArray a, b)
 -- def readPin i ma =
@@ -152,7 +147,11 @@ def swapMArray i a arr =
 
 
 -- monadicな実装用のテスト
--- sig make111 : rev State -o rev (MArray Int, State)
+
+sig arr111 : RevM (MArray Int)
+def arr111 = newMArray eqInt 3 1 (rev())
+
+-- sig make111 : rev State -o Rev (MArray Int, State)
 -- def make111 = newMArray eqInt 3 1 (rev ())
 
 -- sig arrayHead : MArray a -> a

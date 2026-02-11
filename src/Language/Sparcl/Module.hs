@@ -477,17 +477,15 @@ baseModuleInfo = ModuleInfo {
             let avar = TyVar aname in
             TyForAll [aname]
             $ TyQual []
-              $ avar *-> monadTy avar,
+              $ avar *-@ monadTy avar,
           bindM |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
             let bname = BoundTv $ Local $ User "b" in
             let bvar = TyVar bname in
-            let pname = BoundTv $ Local $ User "p" in
-            let pvar = TyVar pname in
-            TyForAll [aname, bname, pname]
+            TyForAll [aname, bname]
             $ TyQual []
-              $ monadTy avar *-> tyarr pvar avar (monadTy bvar) *-> monadTy bvar,
+              $ monadTy avar *-> (avar -@ monadTy bvar) *-> monadTy bvar,
 
           unliftM |->
             let aname = BoundTv $ Local $ User "a" in
