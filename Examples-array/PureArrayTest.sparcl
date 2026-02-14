@@ -202,3 +202,12 @@ def constArias eqMArr ma =
 	rarr
 
 
+def illFun arr1 arr2 =
+		let rev arr2 <- (\a' -> modifyMArray 0 (add 1) arr2) in
+		let rev arr2 <- (\a' -> modifyMArray 0 (add 1) arr2) in
+		let rev arr2 <- (\a' -> modifyMArray 0 (add 1) arr2) in
+		
+		let rev (a10, arr1') <- readMArray eqInt 0 arr1 in
+		let rev arr2 <- (\a' -> modifyMArray 0 (add 1) arr2) in
+		let rev (a10', arr2) <- pin a10 (\a' -> modifyMArray 0 (add a') arr2) in
+		let rev arr1'' <- invert (readMArray eqInt )
