@@ -162,6 +162,11 @@ renameExp level localnames (Loc loc expr) = first (Loc loc) <$> go expr
       (e0', fv)    <- renameExp level localnames e0
       (alts', fvs) <- unzip <$> mapM (renameAlt level localnames) alts
       return (Case e0' alts', S.unions (fv:fvs))
+      
+    go (CaseM e0 alts) = do
+      (e0', fv)    <- renameExp level localnames e0
+      (alts', fvs) <- unzip <$> mapM (renameAlt level localnames) alts
+      return (CaseM e0' alts', S.unions (fv:fvs))
 
     go (Let decls e) =
       renameLocalDecls level localnames decls $ \decls' level' localnames' bvD fvD _ -> do

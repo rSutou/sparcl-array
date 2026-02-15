@@ -344,6 +344,12 @@ bangTy ty = TyCon nameTyBang [ty]
 revTy :: Ty -> Ty
 revTy ty = TyCon nameTyRev [ty]
 
+revMTy :: Ty -> Ty
+revMTy ty = TyCon nameTyRevM [ty]
+
+mTy :: Ty -> Ty
+mTy ty = TyCon nameTyM [ty]
+
 (-@) :: Ty -> Ty -> Ty
 t1 -@ t2 = TyCon nameTyArr [TyMult One, t1, t2]
 

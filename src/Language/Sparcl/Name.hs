@@ -159,6 +159,11 @@ nameTyBang = nameInBase (System NBang)
 nameTyRev :: Name
 nameTyRev = nameInBase (System NRev)
 
+nameTyRevM :: Name
+nameTyRevM = nameInBase (User "RevM")
+nameTyM :: Name
+nameTyM = nameInBase (User "M")
+
 nameTyInt :: Name
 nameTyInt = nameInBase (User "Int")
 

@@ -101,6 +101,12 @@ ensureRevTy ty = do
   argTy <- newMetaTy
   tryUnify (revTy argTy) ty
   return argTy
+  
+ensureRevMTy :: MonadTypeCheck m => MonoTy -> m MonoTy
+ensureRevMTy ty = do
+  argTy <- newMetaTy
+  tryUnify (revMTy argTy) ty
+  return argTy
 
 ensureFunTy :: MonadTypeCheck m => MonoTy -> m (MonoTy, MonoTy, MonoTy)
 ensureFunTy ty = do
@@ -122,6 +128,13 @@ hasPRev (Loc _ p) = go p
   where
     go :: Pat 'Renaming -> Bool
     go (PCon _ ps) = any hasPRev ps
+    go (PREV _)    = True
+    go _           = False
+    
+isPRev :: LPat 'Renaming -> Bool
+isPRev (Loc _ p) = go p
+  where
+    go :: Pat 'Renaming -> Bool
     go (PREV _)    = True
     go _           = False
 
@@ -746,6 +759,16 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       (alts', umapA) <- {- withMultVar (TyMetaV p) $ -} checkAltsTy alts tyPat mul expectedTy
 
       return (Case e0' alts', mergeUseMap umap0 umapA)
+      
+    go (CaseM e0 alts) = do
+      p <- newMetaTyVar -- multiplicity of `e`
+      mul <- ty2mult (TyMetaV p)
+
+      tyPat <- newMetaTy
+      (e0', umap0)   <- {- withMultVar (TyMetaV p) $ -} checkTyM e0 tyPat mul
+      (alts', umapA) <- {- withMultVar (TyMetaV p) $ -} checkMAltsTy alts tyPat mul expectedTy
+
+      return (CaseM e0' alts', mergeUseMap umap0 umapA)
 
     go (RDO as0 er) = do
       (as0', bind, umap) <- goAs as0
@@ -918,6 +941,29 @@ checkAltsTy alts patTy q bodyTy =
       ~((c', umap), [pat'], bind) <- checkPatsTyK [pat] [q] [patTy] $ do
           when (hasPRev pat) $ void $ ensureRevTy bodyTy
           checkClauseTy c bodyTy
+
+      let xqs = map (\(x,_,qq) -> (x,qq)) bind
+      constrainVars xqs umap
+      return ((pat', c'), foldr (M.delete . fst) umap xqs)
+    -- checkAltTy (p, c) = do
+    --   (p', ubind, lbind) <- checkPatTy p patTy
+    --   c' <- withUVars ubind $ withLVars lbind $ checkClauseTy c bodyTy
+    --   return (p', c')
+
+checkMAltsTy ::
+  MonadTypeCheck m => [ (LPat 'Renaming, Clause 'Renaming) ] ->
+  MonoTy -> Multiplication -> BodyTy -> m ([ (LPat 'TypeCheck, Clause 'TypeCheck) ], UseMap)
+checkMAltsTy alts patTy q bodyTy =
+  -- parallel $ map checkAltTy alts
+  gatherAltUC =<< mapM checkAltTy alts
+  where
+    checkAltTy (pat, c) = do
+      -- (pat', bind) <- checkPatTy pat q patTy
+      -- (c', umap)   <- withVars [ (n,t) | (n,t,_) <- bind ] $ checkClauseTy c bodyTy
+
+      ~((c', umap), [pat'], bind) <- checkPatsTyK [pat] [q] [patTy] $ do
+          when (hasPRev pat) $ void $ ensureRevMTy bodyTy
+          checkClauseMTy c bodyTy
 
       let xqs = map (\(x,_,qq) -> (x,qq)) bind
       constrainVars xqs umap
@@ -1131,6 +1177,20 @@ checkClauseTy (Clause e ws wi) expectedTy = do
              Just ewi -> do
                ty   <- atLoc (location e) $ ensureRevTy expectedTy
                (ewi', umapWi) <- checkTyM ewi (ty *-> boolTy) omega
+               return (Just ewi', umapWi)
+             Nothing -> return (Nothing, M.empty)
+    return (Clause e' ws' wi', umap `mergeUseMap` umapE `mergeUseMap` umapWi)
+
+    
+checkClauseMTy :: MonadTypeCheck m => Clause 'Renaming -> Ty -> m (Clause 'TypeCheck, UseMap)
+checkClauseMTy (Clause e ws wi) expectedTy = do
+  (ws', bind, umap) <- inferDecls False ws
+  withVars bind $ do
+    (e',  umapE) <- checkTy e expectedTy
+    (wi', umapWi) <- case wi of
+             Just ewi -> do
+               ty   <- atLoc (location e) $ ensureRevMTy expectedTy
+               (ewi', umapWi) <- checkTyM ewi (ty *-> mTy boolTy) omega
                return (Just ewi', umapWi)
              Nothing -> return (Nothing, M.empty)
     return (Clause e' ws' wi', umap `mergeUseMap` umapE `mergeUseMap` umapWi)
