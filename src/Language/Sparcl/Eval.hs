@@ -143,6 +143,33 @@ evalU env expr = case expr of
                       _ -> rtError $ text "Expected a pair"
                   )
 
+  RCaseM e0 pes -> return $ VFun $ \vrhs -> do
+    VRes f0 b0 <- evalU env e0
+    let VRes fhs bhs = vrhs
+    pes' <- mapM (\(p,e,e') -> do
+                     -- VBang (VFun ch) <- evalU env e'
+                     VFun ch <- evalU env e'
+                     let ch' v = do
+                           case v of
+                            VCon qp [vb,vhs] | qp == nameTuple 2 -> do
+                              VFun chm <- ch vb
+                              resPair <- chm vhs
+                              case resPair of
+                                VCon qp [VCon q [], _] | qp == nameTuple 2 && q == conTrue -> return True
+                                _ -> return False
+                            _ -> return False
+                     return (p, e, ch', e')) pes
+    lvl <- ask
+    return $ VRes (\hp -> local (const lvl) $ evalCaseFM env hp f0 fhs pes')
+                  (\v  -> local (const lvl) $ evalCaseBM env v b0 bhs pes')
+                  
+  PureM e -> do
+    -- VBang (VFun f) <- evalU env e
+    va <- evalU env e
+    return $ VFun $ \vhs -> return $ VCon (nameTuple 2) [va, vhs]
+
+
+
 
 
 
@@ -240,6 +267,93 @@ evalCaseB env vres b0 alts = do
     fillPat (PCon c ps) bs =
       VCon c (map (flip fillPat bs) ps)
 
+evalCaseFM :: Env -> Heap -> (Heap -> Eval Value) -> (Heap -> Eval Value) -> [ (Pat Name, Exp Name, Value -> Eval Bool, Exp Name) ] -> Eval Value
+evalCaseFM env hp f0 fh alts = do
+  v0 <- f0 hp
+  vh <- fh hp
+  go v0 vh [] alts
+  where
+    go :: Value -> Value -> [(Exp Name, Value -> Eval Bool)] -> [ (Pat Name, Exp Name, Value -> Eval Bool, Exp Name) ] -> Eval Value
+    go v0  _      _  [] = rtError $ text $ "pattern match failure (fwd): " ++ prettyShow v0
+    go v0 vh checker ((p,e,ch,chExp) : pes) =
+      case findMatch v0 p of
+        Nothing ->
+          go v0 vh ((chExp, ch):checker) pes
+        Just binds ->
+          newAddr $ \ah -> do
+            newAddrs (length binds) $ \as -> do
+              let hbinds = zipWith (\a (_, v) -> (a, v)) as binds
+              let binds' = zipWith (\a (x, _) ->
+                                      (x, VRes (lookupHeap a) (return . singletonHeap a))) as binds
+              VRes f _ <- evalU (extendsEnv binds' env) e
+              res <- f (foldr (uncurry extendHeap) (extendHeap ah vh hp) hbinds)
+              checkAssert (chExp, ch) checker res
+
+    checkAssert :: (Exp Name, Value -> Eval Bool) -> [(Exp Name, Value -> Eval Bool)] -> Value -> Eval Value
+    checkAssert ch checkers res = do
+      let expectedResults = True : map (const False) checkers 
+      let checks = zip (ch:checkers) expectedResults
+
+      failedChecks <- filterM (\((_cExp, c), r) -> (/= r) <$> c res) checks 
+
+      () <- case failedChecks of 
+              [] -> pure () 
+              _  -> do 
+                rtError $ align $ text "Assertion failed (fwd) for value: " <> ppr res 
+                          <> nest 2 (linebreak <> vsep 
+                              [ sep [text "-", align $ vsep [ppr cExp, hsep [text "should return" , ppr expected]]]
+                              | ((cExp, _), expected) <- failedChecks ])
+      pure res 
+
+
+evalCaseBM :: Env -> Value -> (Value -> Eval Heap) -> (Value -> Eval Heap) -> [ (Pat Name, Exp Name, Value -> Eval Bool, a) ] -> Eval Heap
+evalCaseBM env vres b0 bh alts = do
+  (v, vh, hp) <- go [] alts
+  hp' <- {- trace (show $ text "hp = " <> pprHeap hp <> comma <+> text "v = " <> ppr v) $ -} b0 v
+  hp'' <- bh vh
+  return $ unionHeap hp'' $ unionHeap hp hp'
+  where
+    mkAssert :: Pat Name -> (Pat Name, Value -> Bool)
+    mkAssert p = (p, \v -> case findMatch v p of
+                     Just _ -> True
+                     _      -> False) 
+
+    checkAllFalse :: Applicative m => Value -> [(Pat Name, Value -> Bool)] -> (Pat Name -> m ()) -> m () 
+    checkAllFalse _ [] _whenTrue = pure () 
+    checkAllFalse v ((p, ch) : checkers) whenTrue = 
+      if ch v then whenTrue p 
+      else         checkAllFalse v checkers whenTrue 
+
+    go _ [] = rtError $ text "pattern match failure (bwd)"
+    go checker ((p,e,ch,_):pes) = do
+      -- flg <- ch (VBang vres)
+      flg <- ch vres
+      if flg
+        then do
+          let xs = freeVarsP p
+          newAddr $ \ah -> do
+            let hbinds' = (,ah)
+            newAddrs (length xs) $ \as -> do
+              let binds' = zipWith (\x a ->
+                                      (x, VRes (lookupHeap a) (return . singletonHeap a))) xs as
+              VFun f <- {- trace ("Evaluating bodies") $ -} evalU (extendsEnv binds' env) e
+              VRes _ b <- f $ VRes (lookupHeap ah) (return . singletonHeap ah)
+              hpBr <- {- trace ("vres = " ++ show (ppr vres)) $ -} b vres
+              v0 <- {- trace ("hpBr = " ++ show (pprHeap hpBr)) $ -} fillPat p <$> zipWithM (\x a -> (x,) <$> lookupHeap a hpBr) xs as
+              vh <- lookupHeap ah hpBr
+              () <- checkAllFalse v0 checker $ \pTrue -> 
+                rtError $ align $ text "Assertion failed (bwd): the following pattern and value should not match." <> 
+                  nest 2 (linebreak <> vsep [ hsep [ text "pattern:" , ppr pTrue ],
+                                              hsep [ text "value:  " , ppr v0 ] ])
+              return (v0, vh, removeHeap ah (removesHeap as hpBr))
+        else go (mkAssert p:checker) pes
+
+    fillPat :: Pat Name -> [ (Name, Value) ] -> Value
+    fillPat (PVar n) bs =
+      fromMaybe (error "Shouldn't happen") (lookup n bs)
+
+    fillPat (PCon c ps) bs =
+      VCon c (map (flip fillPat bs) ps)
 
 runFwd :: Value -> Heap -> Eval Value
 runFwd (VRes f _) = f
