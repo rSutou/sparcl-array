@@ -76,6 +76,10 @@ desugarExp (Loc _ expr) = go expr
       e'  <- desugarExp e
       rs' <- desugarAlts alts
       return (C.Case e' rs')
+    go (S.CaseM e alts) = do
+      e'  <- desugarExp e
+      rs' <- desugarMAlts alts
+      return (C.Case e' rs')
 
     go S.Lift =
       withNewNames 2 $ \[x, y] ->
@@ -325,6 +329,20 @@ convertClauseR (S.Clause body ws wi) = do
     --   -- FIXME: more sophisticated with-exp generation.
     --   return $ C.Bang $ C.Abs n $ C.Case (C.Var n) [ (C.PBang (C.PVar n'), C.Con conTrue []) ]
 
+convertClauseRM :: MonadDesugar m => S.Clause 'TypeCheck -> m (C.Exp Name, C.Exp Name)
+convertClauseRM (S.Clause body ws wi) = do
+  body' <- desugarExp (noLoc $ S.Let ws body)
+  we' <- case wi of
+           Just e  -> desugarExp e
+           Nothing -> generateWithExp body'
+  return (body', we')
+  where
+    generateWithExp _ = withNewName $ \n ->
+      return $ C.Abs n $ C.PureM (C.Con conTrue [])
+    -- generateWithExp _ = withNewName $ \n -> withNewName $ \n' ->
+    --   -- FIXME: more sophisticated with-exp generation.
+    --   return $ C.Bang $ C.Abs n $ C.Case (C.Var n) [ (C.PBang (C.PVar n'), C.Con conTrue []) ]
+
 desugarAlts :: forall m. MonadDesugar m => [(S.LPat 'TypeCheck, S.Clause 'TypeCheck)] -> m [(C.Pat Name, C.Exp Name)]
 desugarAlts alts = do
   let alts' = map (\(p,c) ->
@@ -357,6 +375,42 @@ desugarAlts alts = do
               (re, rw) <- convertClauseR c
               return (rp, re, rw)
             return (outP, C.RCase re0 pes)
+     where
+       len = length firstSub
+
+
+desugarMAlts :: forall m. MonadDesugar m => [(S.LPat 'TypeCheck, S.Clause 'TypeCheck)] -> m [(C.Pat Name, C.Exp Name)]
+desugarMAlts alts = do
+  let alts' = map (\(p,c) ->
+                      let (cp, subs) = separatePat p
+                      in (cp, subs, c)) alts
+  -- grouping alts that have the same unidir patterns.
+  debugPrint 3 $ text "Common patterns:" <+> ppr [ cp | (cp, _, _) <- alts' ]
+  let altss = groupBy ((==) `on` (\(cp,_,_) -> cp)) alts'
+  mapM makeBCases altss
+  where
+    makeBCases :: [ (CPat, [S.LPat 'TypeCheck], S.Clause 'TypeCheck) ] -> m (C.Pat Name, C.Exp Name)
+    makeBCases [] = error "Cannot happen"
+    makeBCases ((cp, [], c):_) = do
+          -- In this case, the original pattern does not have any REV.
+          -- so @length ralts > 1@ means that thare are some redundant patterns.
+          -- TOOD: say warning.
+
+          let p = fillCPat cp []
+          e <- convertClauseU c
+          return (p, e)
+    makeBCases ralts@((cp, firstSub, _):_) =
+          -- Notice that all @cp@ and @length sub@ are the same in @ralts@.
+          withNewNames len $ \xs -> do
+            let outP = fillCPat cp [C.PVar x | x <- xs]
+            let re0 = makeRTupleExpC [ C.Var x | x <- xs ]
+
+            pes <- forM ralts $ \(_, sub, c) -> do
+              sub' <- mapM desugarPat sub
+              let rp = makeTuplePatC sub'
+              (re, rw) <- convertClauseRM c
+              return (rp, re, rw)
+            return (outP, C.RCaseM re0 pes)
      where
        len = length firstSub
 

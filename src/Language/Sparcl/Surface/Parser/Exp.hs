@@ -455,6 +455,14 @@ funExpr = getSrcLoc >>= \startLoc ->
       endLoc <- getSrcLoc
       return $ Loc (startLoc <> endLoc) $ Case e0 alts)
   <|>
+  (do void $ keyword "caseM"
+      e0   <- expr
+      void $ keyword "of"
+      alts <- alternatives
+      void $ keyword "end"
+      endLoc <- getSrcLoc
+      return $ Loc (startLoc <> endLoc) $ CaseM e0 alts)
+  <|>
   (do void $ keyword "revdo"
       as <- assignment `P.endBy` semicolon
       void $ keyword "in"
