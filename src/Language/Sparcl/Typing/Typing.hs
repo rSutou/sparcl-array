@@ -1190,7 +1190,7 @@ checkClauseMTy (Clause e ws wi) expectedTy = do
     (wi', umapWi) <- case wi of
              Just ewi -> do
                ty   <- atLoc (location e) $ ensureRevMTy expectedTy
-               (ewi', umapWi) <- checkTyM ewi (ty *-> mTy boolTy) omega
+               (ewi', umapWi) <- checkTyM ewi (ty *-> boolTy) omega
                return (Just ewi', umapWi)
              Nothing -> return (Nothing, M.empty)
     return (Clause e' ws' wi', umap `mergeUseMap` umapE `mergeUseMap` umapWi)

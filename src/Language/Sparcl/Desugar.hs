@@ -332,13 +332,18 @@ convertClauseR (S.Clause body ws wi) = do
 convertClauseRM :: MonadDesugar m => S.Clause 'TypeCheck -> m (C.Exp Name, C.Exp Name)
 convertClauseRM (S.Clause body ws wi) = do
   body' <- desugarExp (noLoc $ S.Let ws body)
-  we' <- case wi of
-           Just e  -> desugarExp e
-           Nothing -> generateWithExp body'
-  return (body', we')
+  withNewName $ \xp -> do
+    withNewNames 2 $ \xs -> do
+      let [x1, _] = xs
+      we' <- case wi of
+              Just e  -> do
+                e' <- desugarExp e
+                return $ C.Abs xp (makeCase (C.Var xp) [(makeTuplePatC [C.PVar x | x <- xs], C.App e' (C.Var x1))]) 
+              Nothing -> generateWithExp body'
+      return (body', we')
   where
     generateWithExp _ = withNewName $ \n ->
-      return $ C.Abs n $ C.PureM (C.Con conTrue [])
+      return $ C.Abs n (C.Con conTrue [])
     -- generateWithExp _ = withNewName $ \n -> withNewName $ \n' ->
     --   -- FIXME: more sophisticated with-exp generation.
     --   return $ C.Bang $ C.Abs n $ C.Case (C.Var n) [ (C.PBang (C.PVar n'), C.Con conTrue []) ]
@@ -401,16 +406,17 @@ desugarMAlts alts = do
           return (p, e)
     makeBCases ralts@((cp, firstSub, _):_) =
           -- Notice that all @cp@ and @length sub@ are the same in @ralts@.
-          withNewNames len $ \xs -> do
-            let outP = fillCPat cp [C.PVar x | x <- xs]
-            let re0 = makeRTupleExpC [ C.Var x | x <- xs ]
+          withNewName $ \xh -> do
+            withNewNames len $ \xs -> do
+              let outP = fillCPat cp [C.PVar x | x <- xs]
+              let re0 = makeRTupleExpC [ C.Var x | x <- xs ]
 
-            pes <- forM ralts $ \(_, sub, c) -> do
-              sub' <- mapM desugarPat sub
-              let rp = makeTuplePatC sub'
-              (re, rw) <- convertClauseRM c
-              return (rp, re, rw)
-            return (outP, C.RCaseM re0 pes)
+              pes <- forM ralts $ \(_, sub, c) -> do
+                sub' <- mapM desugarPat sub
+                let rp = makeTuplePatC sub'
+                (re, rw) <- convertClauseRM c
+                return (rp, C.App re (C.Var xh), rw)
+              return (outP, C.Abs xh (C.RCase re0 pes))
      where
        len = length firstSub
 

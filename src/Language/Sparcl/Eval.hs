@@ -143,31 +143,24 @@ evalU env expr = case expr of
                       _ -> rtError $ text "Expected a pair"
                   )
 
-  RCaseM e0 pes -> return $ VFun $ \vrhs -> do
-    VRes f0 b0 <- evalU env e0
-    let VRes fhs bhs = vrhs
-    pes' <- mapM (\(p,e,e') -> do
-                     -- VBang (VFun ch) <- evalU env e'
-                     VFun ch <- evalU env e'
-                     let ch' v = do
-                           case v of
-                            VCon qp [vb,vhs] | qp == nameTuple 2 -> do
-                              VFun chm <- ch vb
-                              resPair <- chm vhs
-                              case resPair of
-                                VCon qp [VCon q [], _] | qp == nameTuple 2 && q == conTrue -> return True
-                                _ -> return False
-                            _ -> return False
-                     return (p, e, ch', e')) pes
-    lvl <- ask
-    return $ VRes (\hp -> local (const lvl) $ evalCaseFM env hp f0 fhs pes')
-                  (\v  -> local (const lvl) $ evalCaseBM env v b0 bhs pes')
-                  
-  PureM e -> do
-    -- VBang (VFun f) <- evalU env e
-    va <- evalU env e
-    return $ VFun $ \vhs -> return $ VCon (nameTuple 2) [va, vhs]
-
+  -- RCaseM e0 pes -> do
+  --   VRes f0 b0 <- evalU env e0
+  --   pes' <- mapM (\(p,e,e') -> do
+  --                    -- VBang (VFun ch) <- evalU env e'
+  --                    VFun ch <- evalU env e'
+  --                    let ch' v = do
+  --                          case v of
+  --                           VCon qp [vb,vhs] | qp == nameTuple 2 -> do
+  --                             VFun chm <- ch vb
+  --                             resPair <- chm vhs
+  --                             case resPair of
+  --                               VCon qp [VCon q [], _] | qp == nameTuple 2 && q == conTrue -> return True
+  --                               _ -> return False
+  --                           _ -> return False
+  --                    return (p, e, ch', e')) pes
+  --   lvl <- ask
+  --   return $ VRes (\hp -> local (const lvl) $ evalCaseFM env hp f0 fhs pes')
+  --                 (\v  -> local (const lvl) $ evalCaseBM env v b0 bhs pes')
 
 
 
@@ -285,8 +278,9 @@ evalCaseFM env hp f0 fh alts = do
               let hbinds = zipWith (\a (_, v) -> (a, v)) as binds
               let binds' = zipWith (\a (x, _) ->
                                       (x, VRes (lookupHeap a) (return . singletonHeap a))) as binds
-              VRes f _ <- evalU (extendsEnv binds' env) e
-              res <- f (foldr (uncurry extendHeap) (extendHeap ah vh hp) hbinds)
+              VFun f1  <- evalU (extendsEnv binds' env) e
+              VRes f _ <- f1 (VRes (lookupHeap ah) (return . singletonHeap ah))
+              res <- f (foldr (uncurry extendHeap) hp hbinds)
               checkAssert (chExp, ch) checker res
 
     checkAssert :: (Exp Name, Value -> Eval Bool) -> [(Exp Name, Value -> Eval Bool)] -> Value -> Eval Value
