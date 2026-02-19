@@ -37,8 +37,7 @@ data Exp n
   | RCase !(Exp n) ![ (Pat n, Exp n, Exp n ) ]
   | RPin  !(Exp n) !(Exp n)
   
-  | RCaseM !(Exp n) ![ (Pat n, Exp n, Exp n ) ]
-  | PureM !(Exp n)
+  -- | RCaseM !(Exp n) ![ (Pat n, Exp n, Exp n ) ]
 
 
 freeVars :: Ord n => Exp n -> [n]
@@ -131,17 +130,15 @@ instance (NameCheck n, Pretty n) => Pretty (Exp n) where
   pprPrec k (RPin e1 e2) = parensIf (k > 9) $
     D.text "pin" D.<+> pprPrec 10 e1 D.<+> pprPrec 10 e2
 
-  pprPrec k (RCaseM e0 ps) = parensIf (k > 0) $ D.group $ D.align $
-    D.text "caseM" D.<+> pprPrec 0 e0 D.<+> D.text "of" D.<$>
-    D.vsep (map pprPs ps) D.<$>
-    D.text "end"
-    where
-      pprPs (p, c, e) =
-        D.text "|" D.<+> D.align (D.text "rev" D.<+> pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c D.</> D.text "with" D.<+> D.align (ppr e)))
+  -- pprPrec k (RCaseM e0 ps) = parensIf (k > 0) $ D.group $ D.align $
+  --   D.text "caseM" D.<+> pprPrec 0 e0 D.<+> D.text "of" D.<$>
+  --   D.vsep (map pprPs ps) D.<$>
+  --   D.text "end"
+  --   where
+  --     pprPs (p, c, e) =
+  --       D.text "|" D.<+> D.align (D.text "rev" D.<+> pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c D.</> D.text "with" D.<+> D.align (ppr e)))
 
 
-  pprPrec k (PureM e) = parensIf (k > 9) $
-    D.text "pureM" D.<+> D.align (pprPrec 10 e)
 
 
 data Pat n = PVar !n
