@@ -104,22 +104,33 @@ def newMArray eq size elm u = thaw $ generate eq size (\_ -> elm) u
 sig deleteMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o RevM ()
 def deleteMArray eq size elm = invertM $ newMArray eq size elm 
 
-sig withLengthI : forall a p. (Int # p -> Bool) -> rev (IArray a) -o rev (Bool, IArray a)
+sig withLengthI : forall a b. (Int -> rev b) -> rev (IArray a) -o rev (b, IArray a)
 def withLengthI g ia =
 	let rev (l, ia) <- lengthIArray ia in
-	let rev (l, b) <- pin l (\l' -> case g l' of True -> rev True | False -> rev False end) in
+	let rev (l, b) <- pin l g in
 	let rev ia <- checkLengthI l ia in
 	rev (b, ia)
 
-sig withLengthM : forall a p. (Int # p -> Bool) -> rev (MArray a) -o rev (Bool, MArray a)
+sig withLengthM : forall a b. (Int -> rev b) -> rev (MArray a) -o rev (b, MArray a)
 def withLengthM g ma =
 	let rev (l, ma) <- lengthMArray ma in
-	let rev (l, b) <- pin l (\l' -> case g l' of True -> rev True | False -> rev False end) in
+	let rev (l, b) <- pin l g in
 	let rev ma <- checkLengthM l ma in
 	rev (b, ma)
 
 
+-- derived functions
 
+sig fwdM : (rev a -o RevM b) -> a -> M b
+def fwdM f = case unliftM f of (fw,_) -> fw end
+
+sig bwdM : (rev a -o RevM b) -> b -> M a
+def bwdM f = case unliftM f of (_,bw) -> bw end
+
+sig curryRM : (rev (a, b) -o RevM c) # p -> rev a -o rev b -o RevM c
+def curryRM f x y = f (rev (x,y))
+sig uncurryRM : (rev a -o rev b -o RevM c) # p -> rev (a, b) -o RevM c
+def uncurryRM f p = caseM p of rev (x,y) -> f x y end
 
 sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
 def modifyMArray i f arr = 
@@ -133,10 +144,9 @@ def pinM' ra = pinM (pureRevM ra)
 sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
 def swapMArray i a arr = 
 		sliceAt1 i arr >>= 
-		(\p3 -> bindRev2 
-				(case p3 of (rev (sl1,el2,sl3)) -> rev (el2, rev (sl1,a,sl3)) end) 
-				(\el2 -> \p3 -> combineAt1 i p3 >>= (\ma -> pureRevM $ rev (el2, ma))))
-
+		(\p3 -> caseM p3 of
+				(rev (sl1, el2, sl3)) -> combineAt1 i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
+				end)
 
 -- sig readPin : forall a b. Int -> rev (MArray a) -o (a -> rev b) -o RevM (MArray a, b)
 -- def readPin i ma =

@@ -234,3 +234,72 @@ def tail (Cons _ t) = t
 
 
 
+sig countSame : 
+  Int -> Int -> Int -> Int -> 
+  rev (MArray Int) -o rev (MArray Int) -o 
+  (Int -> Int -> rev (MArray Int) -o rev (MArray Int) -o rev (MArray Int, MArray Int)) -o 
+  rev (Int, MArray Int , MArray Int) 
+def countSame i j v cnt text code k = revdo 
+  (ti, text) <- swap i (const 0) text 
+  caseM eqCheck v ti of 
+    -- text[i] /= v 
+    Left ti -> revdo  
+      (text, code) <- k i (j+2) text code 
+      (const cnt, text, code) 
+      with (== cnt) . fst 
+    Right () -> 
+      countSame (i + 1) j v (cnt + 1) text code k 
+      with (/= cnt) . fst 
+
+sig encode : Int -> Int -> rev (MArray Int) -o rev (MArray Int) -o rev (MArray Int, MArray Int)
+def encode i n text code =
+  (ti, text) <- swap i (const 0) text 
+  (cj, code, text) <- caseM eqCheck 0 ti of 
+    Left ti -> revdo 
+       (ti , (code,text)) <- pinM ti $ \ti -> revDo
+         (cnt, code, text) <- countSame (i+1) j ti 0 text code encode 
+         (zero, code) <- swap (j+1) cnt code 
+         deleteM 0 zero
+         pureM (code, text)
+       pure (ti, code, text)
+       with \(ti, _, _) -> ti /= 0 
+    Right ()   -> revdo 
+       (cj, code) <- swap j (const 0) code 
+       pure (cj, code, text)
+       with \(cj, _, _) -> cj == 0 
+  (zero, code) <- swap j cj code 
+  rev () <- deleteM 0 zero 
+  pureM (text, code)
+
+
+  sig encode : Int -> Int -> rev (MArray Int) -o rev (MArray Int) -o rev (MArray Int, MArray Int)
+def encode i j text code =
+  swap i (const 0) text >>= \p -> caseM p of rev(ti,text) ->
+	caseM eqCheck 0 ti of 
+		rev Left ti -> 
+		(pinM ti $ \ti -> 
+			countSame (i+1) j ti 0 text code encode >>= \p -> caseM p of rev(cnt, code, text) ->
+			swap (j+1) cnt code >>= \p -> caseM p of rev(zero, code) -> 
+			caseM delete eqInt 0 zero of 
+			rev () -> pureRevM (code, text)
+			end
+			end
+			end) 
+			>>= (\p -> caseM p of rev(ti , rev(code,text)) ->
+		pureRevM (rev(ti, code, text))
+		end)
+		with \(ti, _, _) -> not . eqInt ti 0 
+	| rev Right (rev ())   -> 
+			swap j (const 0) code >>= \p -> caseM p of rev(cj, code) ->
+		pureRevM (cj, code, text)
+		end
+		with \(cj, _, _) -> eqInt cj 0 
+		end >>= \p -> caseM p of rev (cj, code, text) -> 
+
+	swap j cj code >>= \p -> caseM p of rev(zero, code) ->
+	caseM delete eqInt 0 zero of rev() ->
+	pureRevM (rev(text, code))
+	end
+	end
+	end
+  end
