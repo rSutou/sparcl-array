@@ -1,0 +1,92 @@
+-- identity
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+-- pair-destructer
+sig fst : (a, b) -> a
+def fst (a, _) = a
+
+sig scd : (a, b) -> b
+def scd (_, b) = b
+
+sig swap : rev (a, b) -o rev (b,a)
+def swap (rev (a, b)) = rev (b, a)
+
+-- unlifting-and-apply
+sig fwd : (rev a -o rev b) -> a -> b
+def fwd f = case unlift f of (x, _) -> x end 
+sig bwd : (rev a -o rev b) -> b -> a
+def bwd f = case unlift f of (_, x) -> x end 
+
+-- function transformers
+sig curry : (q <= ra, q <= rb) => ((a, b) # q -> c) # p -> a # ra -> b # rb -> c
+def curry f x y = f (x,y)
+sig uncurry : (ra <= q, rb <= q) => (a # ra -> b # rb -> c) # p -> (a, b) # q -> c
+def uncurry f (x,y) = f x y
+
+sig curryR : (rev (a, b) -o rev c) # p -> rev a -o rev b -o rev c
+def curryR f x y = f (rev (x,y))
+sig uncurryR : (rev a -o rev b -o rev c) # p -> rev (a, b) -o rev c
+def uncurryR f (rev (x,y)) = f x y
+
+-- 高階多引数関数の引数の順番を入れ替える
+-- unliftを使いやすくするためのもの
+sig argswap : (qa <= ra, qb <= rb) => (a # qa -> b # qb -> c) # p -> b # rb -> a # ra -> c
+def argswap f a b = f b a
+
+
+-- liftが必要になる構文
+-- invertは安全のはず
+sig invert : (rev a -o rev b) -> rev b -o rev a
+def invert f = case unlift f of (x,y) -> lift y x end
+-- uncurry lift (fwd swap (unlift f))
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig const : (a # p -> a # q -> Bool) -> a -> rev a
+def const eq c =
+	lift (\() -> c)
+		 (\c' -> let True <- eq c c' in ())
+		 (rev ())
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig delete : (a # p -> a # q -> Bool) -> a -> rev a -o rev ()
+def delete eq c = invert (\(rev ()) -> const eq c)
+
+
+-- apply関数(右項が引数)
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
+def ($) f x = f x
+
+fixity $ 0 right 
+
+-- 関数合成関数(右項が関数)
+sig (.) : (qf <= px, qf <= pg, qg <= px) => (b # qf -> c) # pf -> (a # qg -> b) # pg -> a # px -> c
+def (.) f g = \x -> f (g x)
+
+fixity . 90 right
+
+sig (>>=) : forall a b. RevM a -o (rev a -o RevM b) -o RevM b
+def (>>=) a amb = bindRevM a amb
+
+
+
+type Symbol = Char
+data LZPair = Lit Symbol | Pair (Int, Int)
+
+sig isLit : LZPair -> Bool
+def isLit (Lit _) = True
+        | _       = False
+
+
+
+sig eqMArray : (a # p -> a # q -> Bool) -> rev (MArray a) -o rev (MArray a) -o RevM (Bool, MArray a, MArray a)
+def eqMArray eq ma1 ma2 =
+	let rev (l1, ma1) <- lengthMArray ma1 in
+	let rev (l2, ma2) <- lengthMArray ma2 in
+	let rev (l1, (l2, b)) <- pin l1 (\l1' -> pin l2	(\l2' -> 
+		caseM eqInt l1' l2' of
+			  True -> rev True
+			| False -> rev False
+		end)) in
+	
+
