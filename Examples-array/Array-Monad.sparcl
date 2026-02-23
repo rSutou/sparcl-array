@@ -137,8 +137,8 @@ def modifyMArray i f arr =
 		sliceAt1 i arr >>= 
 		(\p3 -> combineAt1 i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
 		
-sig pinM' : forall a b. rev a -o (a -> RevM b) -o RevM (a,b)
-def pinM' ra = pinM (pureRevM ra)
+sig bindPin : forall a b. RevM a -o (a -> RevM b) -o RevM (a,b)
+def bindPin ra f = ra >>= (\p -> pinM p f)
 
 
 sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
@@ -148,13 +148,129 @@ def swapMArray i a arr =
 				(rev (sl1, el2, sl3)) -> combineAt1 i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
 				end)
 
+
+sig unPairM : RevM (a, b) -o (rev a -o rev b -o RevM c) -o RevM c
+def unPairM p f = p >>= \p -> caseM p of rev(a,b) -> f a b end
+
+sig unTripleM :RevM (a, b, c) -o (rev a -o rev b -o rev c -o RevM d) -o RevM d
+def unTripleM t f = t >>= \t -> caseM t of rev(a,b,c) -> f a b c end
+
+
+sig idBool : rev Bool -o rev Bool
+def idBool b = b
+
+sig not : rev Bool -o rev Bool
+def not (rev False) = rev True with fwd idBool
+		| (rev True) = rev False
+data Or a b = Left a | Right b
+
+def isRight (Right _) = True
+			| (Left _) = False
+
+def eqCheck n m = 
+	case pin m (\m' -> case eqInt n m' of True -> rev True | False -> rev False end) of
+	 rev (m, True) -> let rev () <- delete eqInt n m in rev Right (rev()) with isRight
+	| rev (m, False) -> rev Left m	with fwd not .isRight
+	end 
+
+def constBool True = rev True
+			| False = rev False 
+
 -- sig readPin : forall a b. Int -> rev (MArray a) -o (a -> rev b) -o RevM (MArray a, b)
 -- def readPin i ma =
 -- 		sliceAt1 i ma >>= 
 
+-- modifyAll
+sig mapMArray : (rev a -o RevM a) -> rev (MArray a) -o RevM (MArray a)
+def mapMArray f ma = 
+	unPairM (pureRevM $ lengthMArray ma) $ \l -> \ma ->
+	unPairM (caseM pin l (constBool . eqInt 0) of
+	rev (l, True) -> pureRevM $ (rev(l, ma)) with \(l,_) -> eqInt l 0
+	| rev (l, False) -> 
+		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
+		bindRevM (mapMArray f s3) $ \s3 ->
+		bindRevM (f e2) $ \e2 ->
+		bindRevM (combineAt1 0 (rev(s1,e2, s3))) $ \ma ->
+		pureRevM $ (rev(l,ma))
+	end) $ \l -> \ma ->
+	pureRevM $ invert lengthMArray (rev(l,ma))
 
 
+sig foldrMArray : (rev b -o rev a -o RevM (b,a)) -> rev b -o rev (MArray a) -o RevM (b, MArray a)
+def foldrMArray f b ma = 
+	unPairM (pureRevM $ lengthMArray ma) $ \l -> \ma ->
+	unTripleM (caseM pin l (constBool . eqInt 0) of
+	rev (l, True) -> pureRevM $ (rev(l,b, ma)) with \(l,_,_) -> eqInt l 0
+	| rev (l, False) -> 
+		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (foldrMArray f b s3) $ \b -> \s3 ->
+		unPairM (f b e2) $ \b -> \e2 ->
+		bindRevM (combineAt1 0 (rev(s1,e2, s3))) $ \ma ->
+		pureRevM $ (rev(l,b,ma))
+	end) $ \l -> \b -> \ma ->
+	bindRevM (pureRevM $ invert lengthMArray (rev(l,ma))) $ \ma -> 
+	pureRevM (rev(b,ma))
 
+sig make10 : M (MArray Int)
+def make10 = fwdM (newMArray eqInt 10 0) ()
+
+sig make12 : M (MArray Int)
+def make12 = fwdM (thaw . generate eqInt 10 (\i -> i)) ()
+
+def read10 l ma = 
+	bindM (fwdM (uncurryRM $ swapMArray 0) (0,ma)) $ \(e0,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 1) (0,ma)) $ \(e1,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 2) (0,ma)) $ \(e2,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 3) (0,ma)) $ \(e3,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 4) (0,ma)) $ \(e4,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 5) (0,ma)) $ \(e5,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 6) (0,ma)) $ \(e6,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 7) (0,ma)) $ \(e7,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 8) (0,ma)) $ \(e8,_) ->
+	bindM (fwdM (uncurryRM $ swapMArray 9) (0,ma)) $ \(e9,_) ->
+	bindM (fwdM (deleteMArray eqInt l 0) ma) $\() ->
+	pureM (e0,e1,e2,e3,e4,e5,e6,e7,e8,e9)
+
+sig addRInt : Int -> rev Int -o rev Int
+def addRInt n m = lift (\n' -> n' + n) (\n' -> n' - n) m
+
+
+def testMap = 
+	bindM 
+	(bindM make10 (fwdM $ (mapMArray (pureRevM . addRInt 3)))) 
+	(read10 10)
+
+def testFoldr =
+	bindM make12 $ \ma -> 
+	bindM (fwdM (uncurryRM $ (foldrMArray (\s -> \e -> pureRevM (swap $ pin e (\e' -> addRInt e' s))))) (0, ma)) $ \(s, ma) -> 
+	bindM (read10 10 ma) $ \p ->
+	pureM (s,p)
+
+sig superMapRev : (rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a, a, MArray a)) ->
+				rev (MArray a) -o RevM (MArray a)
+def superMapRev f ma = 
+	unPairM (pureRevM $ lengthMArray ma) $ \l -> \ma ->
+	unPairM (caseM pin l (constBool . eqInt 0) of
+	 rev (l, True) -> pureRevM $ (rev(l, ma)) with \(l,_) -> eqInt 0 l
+	| rev (l, False) -> 
+		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
+		bindRevM (superMapRev f s3) $ \s3 ->
+		unTripleM (f s1 e2 s3) $ \s1 -> \e2 -> \s3 ->
+		bindRevM (combineAt1 0 (rev(s1,e2, s3))) $ \ma ->
+		pureRevM $ (rev(l,ma))
+	end) $ \l -> \ma ->
+	pureRevM $ invert lengthMArray (rev(l,ma))
+
+def subtestSuperMapRev m1 e2 m3 =
+	unPairM (pinM e2 (\e2' -> mapMArray (pureRevM . addRInt e2') m3)) $ \e2 -> \m3 ->
+	pureRevM (rev(m1,e2,m3)) 
+
+def testSuperMapRev = 
+	bindM make12 $ \ma -> 
+	bindM (fwdM (superMapRev subtestSuperMapRev) ma) $ \ma -> 
+	bindM (read10 10 ma) $ \p ->
+	pureM p
+	
 
 -- monadicな実装用のテスト
 

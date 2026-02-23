@@ -42,8 +42,9 @@ import           Data.Array.MArray
 import           Data.Vector as V (generateM, (!), freeze, thaw, length, imapM_, unsafeFreeze)
 import           Data.Vector.Mutable as MV
 import qualified Control.Monad.Reader as R
-import Debug.Trace (traceIO)
+import Debug.Trace (traceIO, trace)
 import GHC.RTS.Flags (ProfFlags(retainerSelector))
+import qualified Language.Haskell.TH.PprLib as D
 
 data KeyName
 data KeyOp
@@ -667,6 +668,7 @@ baseModuleInfo = ModuleInfo {
                     let sl3 = VMArr hsa (off + n' + 1) (size - n' - 1)
                     return $ VCon (nameTuple 2) [VCon (nameTuple 3) [sl1, el2, sl3], VHSt hs]
               let b' v = do
+                    -- rtError $ ppr v 
                     let (vslices, VHSt hs) = unPair v
                     let (sl1, el2, sl3) = unPair3 vslices
                     let (hsa1, off1, size1) = unMArr sl1
@@ -736,14 +738,17 @@ baseModuleInfo = ModuleInfo {
                     va <- fa hp
                     VFun frevmb <- f va
                     (fbh, _) <- unRes <$> frevmb vrhs
-                    (vb, vhs') <- unPair <$> fbh hp
+                    v <- fbh hp
+                    let (vb, vhs') = unPair $ v
+                    -- let (VMArr h o s) = vhs'
+                    -- rtError $ ppr o
                     return $ VCon (nameTuple 2) [VCon (nameTuple 2) [va, vb], vhs']
               let b' v = do
-                    let (vab, vhs) = unPair v
+                    let (vab, VHSt hs) = unPair v
                     let (va, vb) = unPair vab
                     VFun frevmb <- f va
                     VRes _ bbh <- frevmb vrhs
-                    hp0 <- bbh $ VCon (nameTuple 2) [vb, vhs]
+                    hp0 <- bbh $ VCon (nameTuple 2) [vb, VHSt hs]
                     hp2 <- ba va
                     return $ unionHeap hp0 hp2
               return $ VRes f' b'),
@@ -757,16 +762,16 @@ baseModuleInfo = ModuleInfo {
                     vhs <- fhs hp
                     return $ VCon (nameTuple 2) [va, vhs]
               let b' v = do
-                    let (va, vhs) = unPair v
+                    let (va, VHSt hs) = unPair v
                     hp1 <- ba va
-                    hp2 <- bhs vhs
+                    hp2 <- bhs $ VHSt hs
                     return $ unionHeap hp1 hp2
               return $ VRes f' b'),
           bindRevM |-> VFun (\vrevma -> return $ VFun $ \vfab -> return $ VFun $ \vrhs -> do
               let VFun frevma = vrevma
               let VFun fab = vfab
               (fahs, bahs) <- unRes <$> frevma vrhs
-              newAddrs 2 (\as -> do
+              newAddrs 2 $ \as -> do
                 let [a1, a2] = as
                 VFun fb <- fab (VRes (lookupHeap a1) (return . singletonHeap a1))
                 VRes f0 b0 <- fb (VRes (lookupHeap a2) (return . singletonHeap a2))
@@ -776,14 +781,14 @@ baseModuleInfo = ModuleInfo {
                 let b' v = do
                       hp' <- b0 v
                       va <- lookupHeap a1 hp'
-                      vhs <- lookupHeap a2 hp'
+                      VHSt hs <- lookupHeap a2 hp'
                       let hp1 = removesHeap as hp'
-                      hp2 <- bahs $ VCon (nameTuple 2) [va, vhs]
+                      hp2 <- bahs $ VCon (nameTuple 2) [va, VHSt hs]
                       return $ unionHeap hp1 hp2
-                return $ VRes f' b')),
+                return $ VRes f' b'),
           
           pureM |->
-            VFun (\va -> return $ VFun $ \vhs -> return $ VCon (nameTuple 2) [va, vhs]),
+            VFun (\va -> return $ VFun $ \(VHSt hs) -> return $ VCon (nameTuple 2) [va, VHSt hs]),
 
           bindM |-> 
             VFun (\vma -> return $ VFun $ \vf -> return $ VFun $ \vhs -> do
@@ -804,8 +809,8 @@ baseModuleInfo = ModuleInfo {
                 let bw' = VFun $ \vb -> return $ VFun $ \vhs -> do
                       hp <- b0 $ VCon (nameTuple 2) [vb, vhs]
                       va <- lookupHeap a1 hp
-                      vhs' <- lookupHeap a2 hp
-                      return $ VCon (nameTuple 2) [va, vhs']
+                      VHSt hs' <- lookupHeap a2 hp
+                      return $ VCon (nameTuple 2) [va, VHSt hs']
                 return $ VCon (nameTuple 2 ) [fw', bw']),
 
           liftM |->
@@ -846,12 +851,12 @@ baseModuleInfo = ModuleInfo {
                       let hp1 = removesHeap as hp'
                       hp2 <- bab $ VCon (nameTuple 2) [va, vb]
                       return $ unionHeap hp1 hp2
-                return $ VRes f' b'),
+                return $ VRes f' b')
 
-          forceDeRev |->
-            VFun (\vr ->
-              let (f, b) = unRes vr in
-              f emptyHeap)
+          -- forceDeRev |->
+          --   VFun (\vr ->
+          --     let (f, b) = unRes vr in
+          --     f emptyHeap)
           ]
 
     names = M.keys typeTable ++ M.keys conTable
