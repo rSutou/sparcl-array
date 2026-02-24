@@ -15,7 +15,7 @@ import           Control.Monad.Fail
 import           Control.Monad.Fix         (MonadFix(..))
 import Control.Applicative (Alternative)
 import           Data.Array.IO (IOArray, mapArray)
-import           Data.Vector          (Vector)
+import           Data.Vector         as V (Vector, toList)
 import           Data.Vector.Mutable (MVector (MVector), IOVector, clone)
 
 data Value = VCon !Name ![Value]
@@ -70,7 +70,10 @@ instance Pretty Value where
   pprPrec _ (VRes _ _) = D.text "<reversible computation>"
   pprPrec _ (VMArr {}) = D.text "<mutable array>"
   pprPrec _ (VISli {}) = D.text "<immutable slice>"
-  pprPrec _ (VIArr _) = D.text "<immutable array>"
+  pprPrec _ (VIArr imv) =  
+    D.text "[" D.<+>
+    D.hsep [ pprPrec 10 v | v <- V.toList imv ] D.<+>
+    D.text "]"
   pprPrec _ (VHSt _) = D.text "<state>"
 
 

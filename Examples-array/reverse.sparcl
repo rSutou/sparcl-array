@@ -192,23 +192,22 @@ def reverse i j ma =
 		end
 
 		
+sig reverseAll : rev (MArray a) -o RevM (MArray a)
+def reverseAll a =
+		unPairM (pureRevM $ lengthMArray a) $ \l -> \a ->
+		unPairM (pinM l (\l' -> reverse 0 (l' - 1) a)) $ \l -> \a ->
+		pureRevM $ invert lengthMArray (rev (l,a))
+
+		
 sig makeRep : Int -> M (MArray Int)
 def makeRep e = fwdM (newMArray eqInt 10 e) ()
 
 sig makeUp : Int -> M (MArray Int)
-def makeUp e = fwdM (thaw . generate eqInt 10 (\i -> e + i)) ()
+def makeUp e = fwdM (thaw . generate eqInt e (\i -> i)) ()
 
-sig read10 : MArray Int -> M (Int,Int,Int,Int,Int,Int,Int,Int,Int,Int)
-def read10 ma = 
-	bindM (fwdM (uncurryRM $ swapMArray 0) (0,ma)) $ \(e0,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 1) (0,ma)) $ \(e1,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 2) (0,ma)) $ \(e2,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 3) (0,ma)) $ \(e3,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 4) (0,ma)) $ \(e4,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 5) (0,ma)) $ \(e5,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 6) (0,ma)) $ \(e6,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 7) (0,ma)) $ \(e7,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 8) (0,ma)) $ \(e8,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 9) (0,ma)) $ \(e9,_) ->
-	bindM (fwdM (deleteMArray eqInt 10 0) ma) $\() ->
-	pureM (e0,e1,e2,e3,e4,e5,e6,e7,e8,e9)
+
+sig bindFreeze : M (MArray a) -> (MArray a -> M (MArray a)) -> M (IArray a)
+def bindFreeze ma f =
+		bindM ma $ \ma ->
+		bindM (f ma) $ 
+		fwdM freezeMArray
