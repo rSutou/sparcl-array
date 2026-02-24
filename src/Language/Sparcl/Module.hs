@@ -267,7 +267,7 @@ baseModuleInfo = ModuleInfo {
     freezeMArray = base "freezeMArray"
 
     slice2 = base "slice2"
-    sliceAt1 = base "sliceAt1"
+    sliceAt = base "sliceAt"
     lengthMArray = base "lengthMArray"
 
     runRevM = base "runRevM"
@@ -410,7 +410,7 @@ baseModuleInfo = ModuleInfo {
             TyForAll [aname]
             $ TyQual []
               $ intTy *-> revTy (marrayBodyTy avar) -@ revTy (tupleTy [marrayBodyTy avar, marrayBodyTy avar]),
-          sliceAt1 |->
+          sliceAt |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
             TyForAll [aname]
@@ -651,7 +651,7 @@ baseModuleInfo = ModuleInfo {
                     guard (hsa1 == hsa2 && n' == size1 && 0 <= size2 && off1 + n' == off2)
                     ba $ VMArr hsa1 off1 (size1 + size2)
               return $ VRes f' b'),
-          sliceAt1 |->
+          sliceAt |->
             VFun (\n -> return $ VFun $ \va -> return $ VFun $ \vrhs -> do
               let n' = unInt n
               guard $ 0 <= n'
@@ -660,7 +660,7 @@ baseModuleInfo = ModuleInfo {
               let f' hp = do
                     (hsa, off, size) <- unMArr <$> fa hp
                     unless (n' < size)
-                      $ rtError $ text "index is out of range in sliceAt1(fwd)"
+                      $ rtError $ text "index is out of range in sliceAt(fwd)"
                     VHSt hs <- fhs hp
                     let sl1 = VMArr hsa off n'
                     let (SArr iov) = lookUpHeapState hsa hs
@@ -674,7 +674,7 @@ baseModuleInfo = ModuleInfo {
                     let (hsa1, off1, size1) = unMArr sl1
                     let (hsa3, off3, size3) = unMArr sl3
                     unless (hsa1 == hsa3 && n' == size1 && 0 <= size3 && off1 + size1 + 1 == off3)
-                           $ rtError $ text "index error in sliceAt1(bwd)"
+                           $ rtError $ text "index error in sliceAt(bwd)"
                     let SArr iov = lookUpHeapState hsa1 hs
                     liftIO $ MV.write iov (off1 + n') el2
                     hp1 <- ba $ VMArr hsa1 off1 (size1 + size3 + 1)

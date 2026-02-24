@@ -99,11 +99,11 @@ def thaw = invertM freezeMArray
 sig combine2 : forall a. Int -> rev (MArray a) -o rev (MArray a) -o rev (MArray a)
 def combine2 = curryR . invert . slice2
 
-sig combineAt1 : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
-def combineAt1 = invertM . sliceAt1
+sig combineAt : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
+def combineAt = invertM . sliceAt
 
-sig curriedCombineAt1 : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
-def curriedCombineAt1 i sl1 el2 sl3 = combineAt1 i (rev (sl1, el2, sl3))
+sig curriedcombineAt : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
+def curriedcombineAt i sl1 el2 sl3 = combineAt i (rev (sl1, el2, sl3))
 
 sig checkLengthM : forall a. rev Int -o rev (MArray a) -o rev (MArray a)
 def checkLengthM = curryR $ invert $ lengthMArray
@@ -115,27 +115,14 @@ def newMArray eq size elm u = thaw $ generate eq size (\_ -> elm) u
 sig deleteMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o RevM ()
 def deleteMArray eq size elm = invertM $ newMArray eq size elm 
 
-sig withLengthI : forall a b. (Int -> rev b) -> rev (IArray a) -o rev (b, IArray a)
-def withLengthI g ia =
-	let rev (l, ia) <- lengthIArray ia in
-	let rev (l, b) <- pin l g in
-	let rev ia <- checkLengthI l ia in
-	rev (b, ia)
-
-sig withLengthM : forall a b. (Int -> rev b) -> rev (MArray a) -o rev (b, MArray a)
-def withLengthM g ma =
-	let rev (l, ma) <- lengthMArray ma in
-	let rev (l, b) <- pin l g in
-	let rev ma <- checkLengthM l ma in
-	rev (b, ma)
 
 
 
 
 sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
 def modifyMArray i f arr = 
-		sliceAt1 i arr >>= 
-		(\p3 -> combineAt1 i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
+		sliceAt i arr >>= 
+		(\p3 -> combineAt i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
 		
 -- sig pinM' : forall a b. rev a -o (a -> RevM b) -o RevM (a,b)
 -- def pinM' ra = pinM (pureRevM ra)
@@ -143,18 +130,18 @@ def modifyMArray i f arr =
 
 sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
 def swapMArray i a arr = 
-		sliceAt1 i arr >>= 
+		sliceAt i arr >>= 
 		(\p3 -> caseM p3 of
-				(rev (sl1, el2, sl3)) -> combineAt1 i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
+				(rev (sl1, el2, sl3)) -> combineAt i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
 				end)
 
 sig readPin : forall a b. (a -> a -> Bool) -> Int -> rev (MArray a) -o RevM (MArray a, a)
 def readPin eq i ma =
-	sliceAt1 i ma >>= 
+	sliceAt i ma >>= 
 	(\p -> caseM p of 
 	rev (s1,e2,s3) -> 
 		caseM pin e2 (const eq) of
-		rev (e2, e2') -> (curriedCombineAt1 i s1 e2 s3) >>= (\ma -> pureRevM (rev(ma,e2')))
+		rev (e2, e2') -> (curriedcombineAt i s1 e2 s3) >>= (\ma -> pureRevM (rev(ma,e2')))
 		end
 	end)
 
