@@ -10,14 +10,14 @@ def bwd f = case unlift f of (_, x) -> x end
 -- def (.) f g = \x -> f (g x)
 
 
-sig ($) : ( <= ) => (a # p -> b) # q -> a # r -> b
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
 def ($) f x = f x
 fixity $ 0 right 
 
 -- Bool
 
 sig idBool : forall p. Bool # p -> Bool
-def idBool = id
+def idBool b = b
 
 sig not : forall p. Bool # p -> Bool
 def not False = True
