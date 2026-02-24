@@ -187,8 +187,8 @@ def reverseAll a =
 		pureRevM $ invert lengthMArray (rev (l,a))
 
 		
-sig makeRep : Int -> M (MArray Int)
-def makeRep e = fwdM (newMArray eqInt 10 e) ()
+sig makeRep : Int -> Int -> M (MArray Int)
+def makeRep l e = fwdM (newMArray eqInt l e) ()
 
 sig makeUp : Int -> M (MArray Int)
 def makeUp e = fwdM (thaw . generate eqInt e (\i -> i)) ()
@@ -199,3 +199,11 @@ def bindFreeze ma f =
 		bindM ma $ \ma ->
 		bindM (f ma) $ 
 		fwdM freezeMArray
+
+		
+def runTest0 () = runM $ bindFreeze (makeUp 20) $ fwdM reverseAll
+def runTest1 () = runM $ bindFreeze (makeUp 20) $ bwdM reverseAll
+
+def runTest2 () = runM $ bindFreeze (makeUp 20) $ fwdM (reverse 5 8)
+def runTest3 () = runM $ bindFreeze (makeUp 20) $ bwdM (reverse 5 8)
+

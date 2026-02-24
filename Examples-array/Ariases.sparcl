@@ -1,3 +1,5 @@
+-- This is for naive array's arias test 
+
 -- identity
 sig id : forall a p. rev a # p -> rev a
 def id x = x

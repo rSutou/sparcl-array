@@ -202,3 +202,7 @@ def bindFreeze ma f =
 		bindM ma $ \ma ->
 		bindM (f ma) $ 
 		fwdM freezeMArray
+
+		
+def runTest0 () = runM $ bindFreeze (makeUp 20) $ fwdM reverseAll
+def runTest1 () = runM $ bindFreeze (makeUp 20) $ bwdM reverseAll
