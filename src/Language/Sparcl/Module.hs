@@ -262,6 +262,7 @@ baseModuleInfo = ModuleInfo {
 
     name_generate = base "generate"
     nonlinearReadIArray = base "nonlinearReadIArray"
+    readIArray = base "readIArray"
     lengthIArray = base "lengthIArray"
 
     freezeMArray = base "freezeMArray"
@@ -382,12 +383,18 @@ baseModuleInfo = ModuleInfo {
                 intTy *-> tyarr rvar intTy avar *->
                 revTy unitTy -@ revTy (iarrayBodyTy avar),
 
-          nonlinearReadIArray |->
+          -- nonlinearReadIArray |->
+          --   let aname = BoundTv $ Local $ User "a" in
+          --   let avar = TyVar aname in
+          --   TyForAll [aname]
+          --   $ TyQual []
+          --     $ intTy *-> iarrayBodyTy avar *-> avar,
+          readIArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
             TyForAll [aname]
             $ TyQual []
-              $ intTy *-> iarrayBodyTy avar *-> avar,
+              $ intTy *-> revTy (iarrayBodyTy avar) *-@ revTy (tupleTy [avar, iarrayBodyTy avar]),
 
 
           lengthIArray |->
@@ -436,18 +443,18 @@ baseModuleInfo = ModuleInfo {
             $ TyQual []
               $ monadTy avar *-> avar,
 
-          readMArray |->
-            let aname = BoundTv $ Local $ User "a" in
-            let avar = TyVar aname in
-            TyForAll [aname]
-            $ TyQual []
-              $ intTy *-> marrayBodyTy avar *-> monadTy avar,
-          writeMArray |->
-            let aname = BoundTv $ Local $ User "a" in
-            let avar = TyVar aname in
-            TyForAll [aname]
-            $ TyQual []
-              $ intTy *-> avar *-> marrayBodyTy avar *-> monadTy unitTy,
+          -- readMArray |->
+          --   let aname = BoundTv $ Local $ User "a" in
+          --   let avar = TyVar aname in
+          --   TyForAll [aname]
+          --   $ TyQual []
+          --     $ intTy *-> marrayBodyTy avar *-> monadTy avar,
+          -- writeMArray |->
+          --   let aname = BoundTv $ Local $ User "a" in
+          --   let avar = TyVar aname in
+          --   TyForAll [aname]
+          --   $ TyQual []
+          --     $ intTy *-> avar *-> marrayBodyTy avar *-> monadTy unitTy,
 
           pinM |->
             let aname = BoundTv $ Local $ User "a" in
@@ -503,26 +510,26 @@ baseModuleInfo = ModuleInfo {
             let bvar = TyVar bname in
             TyForAll [aname, bname]
             $ TyQual []
-              $ (avar *-> monadTy bvar) *-> (bvar *-> monadTy avar) *-> (revTy avar *-@ revMonadTy bvar),
+              $ (avar *-> monadTy bvar) *-> (bvar *-> monadTy avar) *-> (revTy avar *-@ revMonadTy bvar)
 
-          bindRev2 |->
-            let aname = BoundTv $ Local $ User "a" in
-            let avar = TyVar aname in
-            let bname = BoundTv $ Local $ User "b" in
-            let bvar = TyVar bname in
-            let cname = BoundTv $ Local $ User "c" in
-            let cvar = TyVar cname in
-            TyForAll [aname, bname, cname]
-            $ TyQual []
-              $ revTy (tupleTy [avar, bvar]) *-@ (revTy avar *-@ revTy bvar *-@ revMonadTy cvar) *-@ revMonadTy cvar,
+          -- bindRev2 |->
+          --   let aname = BoundTv $ Local $ User "a" in
+          --   let avar = TyVar aname in
+          --   let bname = BoundTv $ Local $ User "b" in
+          --   let bvar = TyVar bname in
+          --   let cname = BoundTv $ Local $ User "c" in
+          --   let cvar = TyVar cname in
+          --   TyForAll [aname, bname, cname]
+          --   $ TyQual []
+          --     $ revTy (tupleTy [avar, bvar]) *-@ (revTy avar *-@ revTy bvar *-@ revMonadTy cvar) *-@ revMonadTy cvar,
 
 
 
           -- back door
-          forceDeRev |->
-            let aname = BoundTv $ Local $ User "a" in
-            let avar = TyVar aname in
-            TyForAll [aname] (TyQual [] $ revTy avar -@ avar)
+          -- forceDeRev |->
+          --   let aname = BoundTv $ Local $ User "a" in
+          --   let avar = TyVar aname in
+          --   TyForAll [aname] (TyQual [] $ revTy avar -@ avar)
 
 
 
@@ -588,11 +595,16 @@ baseModuleInfo = ModuleInfo {
                       bu unitVal
                 return $ VRes f' b'),
 
-          nonlinearReadIArray |->
+          -- nonlinearReadIArray |->
+          --   VFun (\n -> return $ VFun $ \va -> do
+          --             let n' = unInt n
+          --             let VIArr imv = va
+          --             return $ imv V.! n'),
+          readIArray |->
             VFun (\n -> return $ VFun $ \va -> do
                       let n' = unInt n
                       let VIArr imv = va
-                      return $ imv V.! n'),
+                      return $ VCon (nameTuple 2) [imv V.! n', va]),
           lengthIArray |->
             VFun (\vrarr -> do
               let (fa, ba) = unRes vrarr
@@ -711,24 +723,24 @@ baseModuleInfo = ModuleInfo {
                 guard $ isEmptyHeapState newhs
                 return va),
 
-          readMArray |-> 
-            VFun (\n -> return $ VFun $ \vma -> return $ VFun $ \vhs -> do
-              let n' = unInt n
-              let (hsa, off, size) = unMArr vma
-              guard $ 0 <= n' && n' < size
-              let VHSt hs = vhs
-              let SArr iov = lookUpHeapState hsa hs
-              el <- liftIO $ MV.read iov (off + n')
-              return $ VCon (nameTuple 2) [el, vhs]),
-          writeMArray |-> 
-            VFun (\n -> return $ VFun $ \va -> return $ VFun $ \vma -> return $ VFun $ \vhs -> do
-              let n' = unInt n
-              let (hsa, off, size) = unMArr vma
-              guard $ 0 <= n' && n' < size
-              let VHSt hs = vhs
-              let SArr iov = lookUpHeapState hsa hs
-              () <- liftIO $ MV.write iov (off + n') va
-              return $ VCon (nameTuple 2) [unitVal, vhs]),
+          -- readMArray |-> 
+          --   VFun (\n -> return $ VFun $ \vma -> return $ VFun $ \vhs -> do
+          --     let n' = unInt n
+          --     let (hsa, off, size) = unMArr vma
+          --     guard $ 0 <= n' && n' < size
+          --     let VHSt hs = vhs
+          --     let SArr iov = lookUpHeapState hsa hs
+          --     el <- liftIO $ MV.read iov (off + n')
+          --     return $ VCon (nameTuple 2) [el, vhs]),
+          -- writeMArray |-> 
+          --   VFun (\n -> return $ VFun $ \va -> return $ VFun $ \vma -> return $ VFun $ \vhs -> do
+          --     let n' = unInt n
+          --     let (hsa, off, size) = unMArr vma
+          --     guard $ 0 <= n' && n' < size
+          --     let VHSt hs = vhs
+          --     let SArr iov = lookUpHeapState hsa hs
+          --     () <- liftIO $ MV.write iov (off + n') va
+          --     return $ VCon (nameTuple 2) [unitVal, vhs]),
 
           pinM |-> 
             VFun (\vra -> return $ VFun $ \vf -> return $ VFun $ \vrhs -> do
@@ -830,28 +842,28 @@ baseModuleInfo = ModuleInfo {
                       hp1 <- ba va
                       hp2 <- bhs vhs'
                       return $ unionHeap hp1 hp2
-                return $ VRes f' b'),
-
-          bindRev2 |->
-            VFun (\vrab -> return $ VFun $ \vf2 -> return $ VFun $ \vrhs -> do
-              let (fab, bab) = unRes vrab
-              let VFun f2 = vf2
-              newAddrs 2 $ \as -> do
-                let [a1, a2] = as
-                VFun f1 <- f2 (VRes (lookupHeap a1) (return . singletonHeap a1))
-                VFun frmc <- f1 (VRes (lookupHeap a2) (return . singletonHeap a2))
-                VRes f0 b0 <- f1 vrhs
-                let f' hp = do
-                      (va, vb) <- unPair <$> fab hp
-                      f0 (extendHeap a2 vb (extendHeap a1 va hp))
-                let b' v = do
-                      hp' <- b0 v
-                      va <- lookupHeap a1 hp'
-                      vb <- lookupHeap a2 hp'
-                      let hp1 = removesHeap as hp'
-                      hp2 <- bab $ VCon (nameTuple 2) [va, vb]
-                      return $ unionHeap hp1 hp2
                 return $ VRes f' b')
+
+          -- bindRev2 |->
+          --   VFun (\vrab -> return $ VFun $ \vf2 -> return $ VFun $ \vrhs -> do
+          --     let (fab, bab) = unRes vrab
+          --     let VFun f2 = vf2
+          --     newAddrs 2 $ \as -> do
+          --       let [a1, a2] = as
+          --       VFun f1 <- f2 (VRes (lookupHeap a1) (return . singletonHeap a1))
+          --       VFun frmc <- f1 (VRes (lookupHeap a2) (return . singletonHeap a2))
+          --       VRes f0 b0 <- f1 vrhs
+          --       let f' hp = do
+          --             (va, vb) <- unPair <$> fab hp
+          --             f0 (extendHeap a2 vb (extendHeap a1 va hp))
+          --       let b' v = do
+          --             hp' <- b0 v
+          --             va <- lookupHeap a1 hp'
+          --             vb <- lookupHeap a2 hp'
+          --             let hp1 = removesHeap as hp'
+          --             hp2 <- bab $ VCon (nameTuple 2) [va, vb]
+          --             return $ unionHeap hp1 hp2
+          --       return $ VRes f' b')
 
           -- forceDeRev |->
           --   VFun (\vr ->

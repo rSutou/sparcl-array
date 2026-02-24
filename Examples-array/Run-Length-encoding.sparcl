@@ -218,6 +218,10 @@ def encode i j text code =
 	pureRevM (rev(text, code))
 	end
 
+def writeMArray i e a = 
+		bindM (fwdM (uncurryRM $ swapMArray i) (e,a)) $ \(_, _) -> pureM ()
+def readMArray i a = 
+		bindM (fwdM (sliceAt i) a) $ \(_,e,_) -> pureM e
 
 sig text :M (MArray Int)
 def text = 
