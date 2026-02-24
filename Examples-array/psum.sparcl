@@ -93,11 +93,11 @@ def thaw = invertM freezeMArray
 sig combine2 : forall a. Int -> rev (MArray a) -o rev (MArray a) -o rev (MArray a)
 def combine2 = curryR . invert . slice2
 
-sig combineAt1 : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
-def combineAt1 = invertM . sliceAt1
+sig combineAt : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
+def combineAt = invertM . sliceAt
 
-sig curriedCombineAt1 : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
-def curriedCombineAt1 i sl1 el2 sl3 = combineAt1 i (rev (sl1, el2, sl3))
+sig curriedcombineAt : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
+def curriedcombineAt i sl1 el2 sl3 = combineAt i (rev (sl1, el2, sl3))
 
 sig checkLengthM : forall a. rev Int -o rev (MArray a) -o rev (MArray a)
 def checkLengthM = curryR $ invert $ lengthMArray
@@ -109,19 +109,6 @@ def newMArray eq size elm u = thaw $ generate eq size (\_ -> elm) u
 sig deleteMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o RevM ()
 def deleteMArray eq size elm = invertM $ newMArray eq size elm 
 
-sig withLengthI : forall a b. (Int -> rev b) -> rev (IArray a) -o rev (b, IArray a)
-def withLengthI g ia =
-	let rev (l, ia) <- lengthIArray ia in
-	let rev (l, b) <- pin l g in
-	let rev ia <- checkLengthI l ia in
-	rev (b, ia)
-
-sig withLengthM : forall a b. (Int -> rev b) -> rev (MArray a) -o rev (b, MArray a)
-def withLengthM g ma =
-	let rev (l, ma) <- lengthMArray ma in
-	let rev (l, b) <- pin l g in
-	let rev ma <- checkLengthM l ma in
-	rev (b, ma)
 
 
 -- derived functions
@@ -139,8 +126,8 @@ def uncurryRM f p = caseM p of rev (x,y) -> f x y end
 
 sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
 def modifyMArray i f arr = 
-		sliceAt1 i arr >>= 
-		(\p3 -> combineAt1 i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
+		sliceAt i arr >>= 
+		(\p3 -> combineAt i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
 		
 sig bindPin : forall a b. RevM a -o (a -> RevM b) -o RevM (a,b)
 def bindPin ra f = ra >>= (\p -> pinM p f)
@@ -148,9 +135,9 @@ def bindPin ra f = ra >>= (\p -> pinM p f)
 
 sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
 def swapMArray i a arr = 
-		sliceAt1 i arr >>= 
+		sliceAt i arr >>= 
 		(\p3 -> caseM p3 of
-				(rev (sl1, el2, sl3)) -> combineAt1 i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
+				(rev (sl1, el2, sl3)) -> combineAt i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
 				end)
 
 
@@ -178,9 +165,9 @@ def constBool True = rev True
 -- 		unPairM (caseM pin l (\l' -> constBool (eqInt 0 l')) of
 -- 		rev (l, True) -> pureRevM (rev(l, ma)) with \(l',_) -> eqInt 0 l'
 -- 		| rev (l, False) -> 
--- 			unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
+-- 			unTripleM (sliceAt 0 ma) $ \s1 -> \e2 -> \s3 ->
 -- 			bindRevM (mapMArray f s3) $ \s3' ->
--- 			bindRevM (curriedCombineAt1 0 s1 (f e2) s3') $ \ma ->
+-- 			bindRevM (curriedcombineAt 0 s1 (f e2) s3') $ \ma ->
 -- 			pureRevM $ (rev(l,ma))
 -- 		end) $ \l -> \ma ->
 -- 		pureRevM (invert lengthMArray (rev(l,ma)))
@@ -190,68 +177,47 @@ def constBool True = rev True
 sig mapMArrayM : (rev a -o RevM a) -> rev (MArray a) -o RevM (MArray a)
 def mapMArrayM f ma = 
 	unPairM (pureRevM $ lengthMArray ma) $ \l -> \ma ->
-	unPairM (caseM pin l (constBool . eqInt 0) of
-	rev (l, True) -> pureRevM $ (rev(l, ma)) with \(l,_) -> eqInt l 0
-	| rev (l, False) -> 
-		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
-		bindRevM (mapMArrayM f s3) $ \s3 ->
-		bindRevM (f e2) $ \e2 ->
-		bindRevM (combineAt1 0 (rev(s1,e2, s3))) $ \ma ->
-		pureRevM $ (rev(l,ma))
-	end) $ \l -> \ma ->
+	unPairM (pinM l (\l' -> case eqInt 0 l' of
+							True -> pureRevM ma
+							| False -> 
+								unTripleM (sliceAt 0 ma) $ \s1 -> \e2 -> \s3 ->
+								(mapMArrayM f s3) >>= \s3 -> 
+								(f e2) >>= \e2 ->
+								curriedcombineAt 0 s1 e2 s3
+							end))
+	$ \l -> \ma ->
 	pureRevM $ invert lengthMArray (rev(l,ma))
 
 sig psum : rev (MArray Int) -o RevM (MArray Int)
 def psum ma =
-	caseM (lengthMArray ma) of
-	rev (l, ma) -> 
-		unPairM (caseM pin l (\l' -> constBool (eqInt 0 l')) of
-				rev (l, True) -> pureRevM (rev (l,ma)) with (\(l',_)-> eqInt 0 l')
-				| rev (l, False) ->
-					unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
-					bindRevM (psum s3) $ \s3 ->
-					unPairM (pinM e2 (\e2' -> mapMArrayM (pureRevM . addRInt e2') s3)) $ \e2 -> \s3 ->
-					-- unPairM (pinM e2 (\e2' -> mapMArray (\a -> a) s3)) $ \e2 -> \s3 ->
-					bindRevM (combineAt1 0 (rev(s1, e2, s3))) $ \ma ->
-					pureRevM (rev(l,ma))
-				end)
-				$ \l -> \ma ->
-				pureRevM (invert lengthMArray (rev (l,ma)))
-	end
+	unPairM (pureRevM $ lengthMArray ma) $ \l -> \ma ->
+	unPairM (pinM l (\l' -> case eqInt 0 l' of
+							True -> pureRevM ma
+							| False -> 
+								unTripleM (sliceAt 0 ma) $ \s1 -> \e2 -> \s3 ->
+								(psum s3) >>= \s3 ->
+								unPairM (pinM e2 (\e2' -> mapMArrayM (pureRevM . addRInt e2') s3)) $ \e2 -> \s3 ->
+								curriedcombineAt 0 s1 e2 s3
+							end))
+	$ \l -> \ma ->
+	pureRevM $ invert lengthMArray (rev(l,ma))
 
 
 sig makeRep : Int -> M (MArray Int)
 def makeRep e = fwdM (newMArray eqInt 10 e) ()
 
 sig makeUp : Int -> M (MArray Int)
-def makeUp e = fwdM (thaw . generate eqInt 10 (\i -> e + i)) ()
-
-sig read10 : MArray Int -> M (Int,Int,Int,Int,Int,Int,Int,Int,Int,Int)
-def read10 ma = 
-	bindM (fwdM (uncurryRM $ swapMArray 0) (0,ma)) $ \(e0,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 1) (0,ma)) $ \(e1,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 2) (0,ma)) $ \(e2,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 3) (0,ma)) $ \(e3,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 4) (0,ma)) $ \(e4,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 5) (0,ma)) $ \(e5,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 6) (0,ma)) $ \(e6,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 7) (0,ma)) $ \(e7,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 8) (0,ma)) $ \(e8,_) ->
-	bindM (fwdM (uncurryRM $ swapMArray 9) (0,ma)) $ \(e9,_) ->
-	bindM (fwdM (deleteMArray eqInt 10 0) ma) $\() ->
-	pureM (e0,e1,e2,e3,e4,e5,e6,e7,e8,e9)
-
-
+def makeUp e = fwdM (thaw . generate eqInt e (\i -> i)) ()
 
 sig mapMArrayMl : Int -> (rev a -o RevM a) -> rev (MArray a) -o RevM (MArray a)
 def mapMArrayMl len f ma = 
 	case eqInt 0 len of
 	  True -> pureRevM ma
 	| False -> 
-		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
-		bindRevM (mapMArrayMl (len-1) f s3) $ \s3 ->
-		bindRevM (f e2) $ \e2 ->
-		curriedCombineAt1 0 s1 e2 s3
+		unTripleM (sliceAt 0 ma) $ \s1 -> \e2 -> \s3 ->
+		(mapMArrayMl (len-1) f s3) >>= \s3 ->
+		(f e2) >>= \e2 ->
+		curriedcombineAt 0 s1 e2 s3
 	end
 
 sig psuml : Int -> rev (MArray Int) -o RevM (MArray Int)
@@ -259,8 +225,15 @@ def psuml len ma =
 	case eqInt 0 len of
 	  True -> pureRevM ma 
 	| False ->
-		unTripleM (sliceAt1 0 ma) $ \s1 -> \e2 -> \s3 ->
+		unTripleM (sliceAt 0 ma) $ \s1 -> \e2 -> \s3 ->
 		bindRevM (psuml (len -1) s3) $ \s3 ->
 		unPairM (pinM e2 (\e2' -> mapMArrayMl (len-1) (pureRevM . addRInt e2') s3)) $ \e2 -> \s3 ->
-		combineAt1 0 (rev(s1, e2, s3))
+		combineAt 0 (rev(s1, e2, s3))
 	end
+
+	
+sig bindFreeze : M (MArray a) -> (MArray a -> M (MArray a)) -> M (IArray a)
+def bindFreeze ma f =
+		bindM ma $ \ma ->
+		bindM (f ma) $ 
+		fwdM freezeMArray

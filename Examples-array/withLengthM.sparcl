@@ -179,12 +179,15 @@ def reverse i j ma =
 		| _ -> pureRevM ma
 		end
 
-		
+sig withLengthM : (Int -> rev (MArray a) -o RevM (MArray a)) -o rev (MArray a) -o RevM (MArray a)
+def withLengthM f a =
+		caseM (lengthMArray a) of
+		rev (l, a) -> unPairM (pinM l (argswap f a)) (\l -> \a ->
+					  pureRevM $ checkLengthM l a)
+		end
+
 sig reverseAll : rev (MArray a) -o RevM (MArray a)
-def reverseAll a =
-		unPairM (pureRevM $ lengthMArray a) $ \l -> \a ->
-		unPairM (pinM l (\l' -> reverse 0 (l' - 1) a)) $ \l -> \a ->
-		pureRevM $ invert lengthMArray (rev (l,a))
+def reverseAll = withLengthM (\l -> reverse 0 (l-1))
 
 		
 sig makeRep : Int -> M (MArray Int)
