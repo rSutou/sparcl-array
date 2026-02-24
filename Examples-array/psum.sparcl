@@ -203,8 +203,8 @@ def psum ma =
 	pureRevM $ invert lengthMArray (rev(l,ma))
 
 
-sig makeRep : Int -> M (MArray Int)
-def makeRep e = fwdM (newMArray eqInt 10 e) ()
+sig makeRep : Int -> Int ->  M (MArray Int)
+def makeRep l e = fwdM (newMArray eqInt l e) ()
 
 sig makeUp : Int -> M (MArray Int)
 def makeUp e = fwdM (thaw . generate eqInt e (\i -> i)) ()
@@ -237,3 +237,20 @@ def bindFreeze ma f =
 		bindM ma $ \ma ->
 		bindM (f ma) $ 
 		fwdM freezeMArray
+
+def runTest0 () = runM $ bindFreeze (makeUp 20) $ fwdM psum
+def runTest1 () = runM $ bindFreeze (makeUp 20) $ bwdM psum
+
+
+sig withLengthM : (Int -> rev (MArray a) -o RevM (MArray a)) -o rev (MArray a) -o RevM (MArray a)
+def withLengthM f a =
+		caseM (lengthMArray a) of
+		rev (l, a) -> unPairM (pinM l (argswap f a)) (\l -> \a ->
+					  pureRevM $ checkLengthM l a)
+		end
+
+def runTest2 () = runM $ bindFreeze (makeUp 20) $ fwdM $ withLengthM psuml
+
+def runTest2 () = runM $ bindFreeze (makeUp 20) $ bwdM $ withLengthM psuml
+
+def runTest3 () = runM $ bindFreeze (makeRep 20 2) $ fwdM $ withLengthM psuml
