@@ -392,9 +392,14 @@ baseModuleInfo = ModuleInfo {
           readIArray |->
             let aname = BoundTv $ Local $ User "a" in
             let avar = TyVar aname in
-            TyForAll [aname]
+            let pname = BoundTv $ Local $ User "p" in
+            let pvar = TyVar pname in
+            let qname = BoundTv $ Local $ User "q" in
+            let qvar = TyVar qname in
+            TyForAll [aname, pname, qname]
             $ TyQual []
-              $ intTy *-> revTy (iarrayBodyTy avar) *-@ revTy (tupleTy [avar, iarrayBodyTy avar]),
+              $ tyarr pvar avar (tyarr qvar avar boolTy) *->
+                intTy *-> revTy (iarrayBodyTy avar) *-@ revTy (tupleTy [avar, iarrayBodyTy avar]),
 
 
           lengthIArray |->
@@ -601,10 +606,26 @@ baseModuleInfo = ModuleInfo {
           --             let VIArr imv = va
           --             return $ imv V.! n'),
           readIArray |->
-            VFun (\n -> return $ VFun $ \va -> do
+            VFun (\veq -> return $ VFun $ \n -> return $ VFun $ \va -> do
+                      let VFun eq2 = veq
                       let n' = unInt n
-                      let VIArr imv = va
-                      return $ VCon (nameTuple 2) [imv V.! n', va]),
+                      let (farr, barr) = unRes va
+                      let f' hp = do
+                            varr <- farr hp
+                            let VIArr imv = varr
+                            let size = V.length imv
+                            unless (0 <= n' && n' < size) $ rtError $ text "index out of range: in readIArray(fwd)"
+                            return $ VCon (nameTuple 2) [imv V.! n', varr]
+                      let b' v = do
+                            let (ve, varr) = unPair v
+                            let VIArr imv = varr
+                            let size = V.length imv
+                            unless (0 <= n' && n' < size) $ rtError $ text "index out of range: in readIArray(fwd)"
+                            b <- unBool <$> eq2 ve
+                            unless b $ rtError $ text "equality error in readIArray(bwd)"
+                            barr varr
+
+                      return $ VRes f' b'),
           lengthIArray |->
             VFun (\vrarr -> do
               let (fa, ba) = unRes vrarr
