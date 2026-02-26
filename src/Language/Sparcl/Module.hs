@@ -261,7 +261,7 @@ baseModuleInfo = ModuleInfo {
     ltRational = base "ltRational"
 
     name_generate = base "generate"
-    nonlinearReadIArray = base "nonlinearReadIArray"
+    -- nonlinearReadIArray = base "nonlinearReadIArray"
     readIArray = base "readIArray"
     lengthIArray = base "lengthIArray"
 
@@ -274,8 +274,8 @@ baseModuleInfo = ModuleInfo {
     runRevM = base "runRevM"
     srunM = base "runM"
 
-    readMArray = base "readMArray"
-    writeMArray = base "writeMArray"
+    -- readMArray = base "readMArray"
+    -- writeMArray = base "writeMArray"
 
     pinM = base "pinM"
 
@@ -289,9 +289,9 @@ baseModuleInfo = ModuleInfo {
     unliftM = base "unliftM"
     liftM = base "liftM"
 
-    bindRev2 = base "bindRev2"
+    -- bindRev2 = base "bindRev2"
 
-    forceDeRev = base "forceDeRev"
+    -- forceDeRev = base "forceDeRev"
 
     unInt  (VLit (LitInt n)) = n
     unInt  _                 = cannotHappen $ text "Not an integer"
@@ -621,7 +621,8 @@ baseModuleInfo = ModuleInfo {
                             let VIArr imv = varr
                             let size = V.length imv
                             unless (0 <= n' && n' < size) $ rtError $ text "index out of range: in readIArray(fwd)"
-                            b <- unBool <$> eq2 ve
+                            VFun eq1 <- eq2 ve
+                            b <- unBool <$> (eq1 $ imv V.! n')
                             unless b $ rtError $ text "equality error in readIArray(bwd)"
                             barr varr
 
