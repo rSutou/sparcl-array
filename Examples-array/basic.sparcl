@@ -6,8 +6,8 @@ def id x = x
 sig fst : (a, b) -> a
 def fst (a, _) = a
 
-sig scd : (a, b) -> b
-def scd (_, b) = b
+sig snd : (a, b) -> b
+def snd (_, b) = b
 
 sig swap : rev (a, b) -o rev (b,a)
 def swap (rev (a, b)) = rev (b, a)
@@ -232,4 +232,53 @@ def tail (Cons _ t) = t
 -- sig take : Int -> List a -> List a
 -- def take n 
 
+
+sig annotate : (a -> Bool) -> rev a -o rev (a, Bool)
+def annotate p x = pin x (constBool . p)
+sig assert : (a -> Bool) -> rev (a, Bool) -o rev a 
+def assert = invert . annotate  
+
+
+sig deleteBool : Bool -> rev Bool -o rev ()
+def deleteBool b rb =
+    case b of
+    | True -> case rb of rev True -> rev () end
+    | False -> case rb of rev False -> rev () end
+    end
+
+-- def assert p (rev (x, b)) = 
+--  let rev (x, ()) <- pin x (\x' -> deleteBool (p x) b) in
+--  x
+
+
+def constBool b = case b of True -> rev True | False -> rev False end
+
+def null = isNil
+
+sig revfoldr : 
+     (s -> rev s' -o rev r , rev a -o (s -> rev s' -o rev r) -o s -> rev s' -o rev r)
+     -> (s -> r -> Bool) -> (s -> r -> Bool) -> rev (List a) -o s -> rev s' -o rev r 
+def revfoldr cn p1 p2 ls state revs = 
+    let rev (ls, b) <- annotate null ls in 
+    let rev (b , y) <- pin b $ \b -> case b of 
+        | True  -> 
+            let rev () <- invert (\(rev ()) -> rev Nil) ls in 
+            fst cn state revs 
+        | False -> 
+            let rev (x , y) <- invert (\(rev (a , b)) -> rev Cons a b) ls in 
+            snd cn x (revfoldr cn p1 p2 y) state revs 
+        end in 
+    assert (\y -> case p1 state y of 
+                | True -> True 
+                | False -> case p2 state y of 
+                    | True -> False 
+                    end
+                end  
+                ) (rev (y , b))
+
+def tail (Cons _ xs) = xs 
+
+
+def reverse xs = 
+    revfoldr (\_ x -> x , \a k p acc -> k (p . tail) (rev Cons a acc)) (\p r -> p r) (\_ _ -> True) xs null (rev Nil)
 
