@@ -164,6 +164,15 @@ nameTyRevM = nameInBase (User "RevM")
 nameTyM :: Name
 nameTyM = nameInBase (User "M")
 
+nameTyRState :: Name
+nameTyRState = nameInBase (User "RState")
+nameTyState :: Name
+nameTyState = nameInBase (User "State")
+
+nameTyReader :: Name
+nameTyReader = nameInBase (User "Reader")
+
+
 nameTyInt :: Name
 nameTyInt = nameInBase (User "Int")
 
