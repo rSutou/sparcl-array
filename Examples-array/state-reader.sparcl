@@ -448,6 +448,34 @@ def unPairM p f = p >>= \p -> caseM p of rev(a,b) -> f a b end
 sig unTripleM :RevM (a, b, c) -o (rev a -o rev b -o rev c -o RevM d) -o RevM d
 def unTripleM t f = t >>= \t -> caseM t of rev(a,b,c) -> f a b c end
 
+sig swap2 : Int -> Int -> rev (MArray a) -o RevM (MArray a)
+def swap2 i j ma = 
+	case compareInt i j of 
+	Eq -> pureRevM ma
+	| Lt -> 
+		unTripleM (sliceAt j ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray i e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt j s1 e2 s3
+	| Gt -> 
+		unTripleM (sliceAt i ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray j e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt i s1 e2 s3
+	end
+	
+sig reverse : Int -> Int -> rev (MArray a) -o RevM (MArray a)
+def reverse i j ma =
+		case compareInt i j of 
+		 Lt -> swap2 i j ma >>= reverse (i+1) (j-1)
+		| _ -> pureRevM ma
+		end
+
+sig withLengthM : (Int -> rev (MArray a) -o RevM (MArray a)) -o rev (MArray a) -o RevM (MArray a)
+def withLengthM f a =
+		caseM (lengthMArray a) of
+		rev (l, a) -> unPairM (pinM l (argswap f a)) (\l -> \a ->
+					  pureRevM $ checkLengthM l a)
+		end
+
 
 sig annotateM : (a -> Reader Bool) -> rev a -o RState (a, Bool)
 def annotateM p x = pinH x (\x' -> bindReader (p x') $ (pureReader . constBool))
@@ -467,3 +495,157 @@ def caseMFun p1 p2 bra x =
 	| False -> snd bra x
 	end) >>= 
 	assertM p2 . swap
+	
+	
+sig bubbleSwap : Int -> rev (MArray (Int, Int)) -o RevM (MArray (Int, Int))
+def bubbleSwap i arr =
+	unTripleM (sliceAt i arr) $ \s1 -> \e2 -> \s3 ->
+	unTripleM (sliceAt 0 s3) $ \s3 -> \e4 -> \s5 ->
+	unPairM (pureRevM e2) $ \e2v -> \e2i ->
+	unPairM (pureRevM e4) $ \e4v -> \e4i ->
+	caseM 
+		case pin (rev (e2v, e4v)) (\(e2v',e4v') -> constBool (ltInt e4v' e2v')) of
+		rev ((e2v, e4v), True) -> rev (rev (e4v, e4i), rev (e2v, e2i)) with \((_,i2),(_,i4)) -> ltInt i4 i2
+		| rev ((e2v, e4v), False) -> rev (rev (e2v, e2i), rev (e4v, e4i))
+		end
+	of
+	| rev (e2, e4) -> 
+		combineAt 0 (rev (s3, e4, s5)) >>= \s3 ->
+		combineAt i (rev (s1, e2, s3))
+	end
+
+sig bubbleWithRange : Int -> Int -> rev (MArray (Int, Int)) -o RevM (MArray (Int, Int))
+def bubbleWithRange i j arr =
+	case compareInt i j of
+	 Lt -> 
+		bubbleSwap i arr >>= \arr ->
+		bubbleWithRange (i+1) j arr
+	| _ -> pureRevM arr
+	end
+	
+	
+sig bubbleWithLength : Int -> rev (MArray (Int, Int)) -o RevM (MArray (Int, Int))
+def bubbleWithLength len arr =
+	case compareInt 0 len of
+	 Lt -> 
+	 	bubbleWithRange 0 (len - 1) arr >>= 
+		invertM (bubbleWithRange 0 (len - 2)) >>= 
+		bubbleWithLength (len - 1)
+	| _ -> pureRevM arr
+	end
+
+sig sort : rev (MArray (Int, Int)) -o RevM (MArray (Int, Int))
+def sort = withLengthM bubbleWithLength
+    
+	
+sig isEvenInt : Int -> Bool
+def isEvenInt i = 
+	case compareInt i 0 of
+	| Lt -> isEvenInt (i + 2)
+	| Eq -> True
+	| Gt -> 
+		case compareInt i 1 of
+		| Eq -> False
+		| _ -> isEvenInt (i - 2)
+		end
+	end
+
+	
+sig generaterFun : Int -> (Int, Int)
+def generaterFun i = 
+	case isEvenInt i of
+	| True -> (i, i)
+	| False -> (0 - i, i) 
+	end
+
+sig makeArr : Int -> M (MArray (Int, Int))
+def makeArr e = fwdM (thaw . generate (\(i1,n1) (i2, n2) -> eqInt n1 n2 ) e generaterFun) ()
+
+
+sig bindFreeze : M (MArray a) -> (MArray a -> M (MArray a)) -> M (IArray a)
+def bindFreeze ma f =
+		bindM ma $ \ma ->
+		bindM (f ma) $ 
+		fwdM freezeMArray
+		
+		
+sig view : M (MArray a) -> IArray a
+def view ma = runM $ bindM ma $ fwdM freezeMArray
+
+
+sig addInt : Int -> rev Int -o rev Int
+def addInt m = lift (\n -> n + m) (\n -> n - m) 
+
+sig repeat : Int -> Int -> RevM (MArray Int)
+def repeat len e = newMArray eqInt len e (rev ())
+
+sig bsort4withLength : Int -> rev (MArray Int) -o RevM (MArray Int, MArray Int) 
+def bsort4withLength n a = 
+	repeat n 0 >>= \d ->
+	subbsort4 0 (n-1) a d
+	where
+		sig subbsort4 : Int -> Int -> rev (MArray Int) -o rev (MArray Int) -o RevM (MArray Int, MArray Int) 
+		def subbsort4 i j a d =
+			case eqInt i n of 
+			| True -> pureRevM (rev (a, d))
+			| False ->
+				case eqInt j i of
+				| True -> subbsort4 (i+1) (n-1) a d
+				| False -> 
+					caseMFun 
+						(\(a,_) -> 
+							bindReader (get (j-1) a) $ \e2 ->
+							bindReader (get j a) $ \e4 ->
+							pureReader $ ltInt e4 e2)
+						(\(_,d) ->
+							bindReader (get (j-i-1) d) $ \de2 ->
+							pureReader $ eqInt de2 (i+1))
+						(\ad -> 
+							unPairM (pureRevM ad) $ \a -> \d ->
+							swap2 (j-1) j a >>= \a ->
+							modifyMArray (j-i-1) (addInt 1) d >>= \d ->
+							pureRevM $ rev (a,d),
+						pureRevM)
+						rev (a, d)
+						 >>= \ad ->
+					unPairM (pureRevM ad) $ \a -> \d -> 
+					subbsort4 i (j-1) a d
+				end
+			end
+	end
+
+sig bsort4 : rev (MArray Int) -o RevM (MArray Int, MArray Int)
+def bsort4 a = 
+	caseM (lengthMArray a) of
+	rev (l, a) -> 
+		unPairM (pinM l (argswap bsort4withLength a)) $ \l -> \ad ->
+		caseM ad of
+		rev (a, d) -> 
+			pureRevM (checkLengthM l a) >>= \a ->
+			pureRevM (rev (a, d))
+		end
+	end
+	
+sig view2 : M (MArray Int, MArray Int) -> (IArray Int, IArray Int)
+def view2 mp = 
+	runM $ 
+	bindM mp $ \(ma, md) -> bindM (fwdM freezeMArray ma) $ \a -> bindM (fwdM freezeMArray md) $ \d -> pureM (a, d)
+	
+sig viewFir : M (MArray Int, MArray Int) -> IArray Int
+def viewFir mp = 
+	runM $ 
+	bindM mp $ \(ma, md) -> pureM (view $ pureM ma)
+
+sig sampleArr : Int -> M (MArray Int)
+def sampleArr len =
+	bindM (fwdM (thaw . generate eqInt len (\_ -> 0)) ()) $ \a -> 
+	bindM (fwdM (modifyMArray 0 (addInt 2)) a) $ \a -> 
+	bindM (fwdM (modifyMArray 1 (addInt 5)) a) $ \a -> 
+	bindM (fwdM (modifyMArray 2 (addInt 4)) a) $ \a -> 
+	bindM (fwdM (modifyMArray 3 (addInt 0)) a) $ \a -> 
+	bindM (fwdM (modifyMArray 4 (addInt 3)) a) $ \a -> 
+	bindM (fwdM (modifyMArray 5 (addInt 1)) a) $ \a -> 
+	pureM a
+	
+	
+	
