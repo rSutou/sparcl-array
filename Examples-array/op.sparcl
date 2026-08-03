@@ -1,0 +1,12 @@
+
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
+def ($) f x = f x
+
+fixity $ 0 right 
+
+
+sig f : Int -> Int
+def f x = x
+
+sig v : Int
+def v = f $ 1 + 1
