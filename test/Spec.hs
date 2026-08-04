@@ -44,7 +44,7 @@ load tc fp = do
 
 loadEval :: TypingContext -> FilePath -> IO (M.Map Name Value)
 loadEval tc fp = do
-  res <- evaluate =<< runLoader ["."] 0 tc (readModule fp (\env bind -> pure $ M.toList $ runEval (evalUBind env bind)))
+  res <- evaluate =<< runLoader ["."] 0 tc (readModule fp (\env bind -> M.toList <$> runEval (evalUBind env bind)))
   pure $ mcValueTable (miModuleContext res)
 
 checkSame :: (Ord a, Show a) => M.Map a Value -> a -> a -> Expectation
