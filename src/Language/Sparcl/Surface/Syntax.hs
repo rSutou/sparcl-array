@@ -210,6 +210,8 @@ data Exp p
   | RCon !(XId p)
   | RPin
 
+  | CaseM !(LExp p) ![ (LPat p, Clause p) ]
+
 instance (AllPretty p) => Pretty (LExp p) where
   pprPrec k = pprPrec k . unLoc
 
@@ -225,13 +227,18 @@ instance (AllPretty p) => Pretty (Exp p) where
   pprPrec _ (WProj i n) = D.text "&" <> ppr i <> D.text "_" <> ppr n
   pprPrec _ (WTup es) = D.text "&(" <> D.hsep (D.punctuate D.comma [pprPrec 0 e | e <- es]) <> D.text ")"
   pprPrec _ (Con c) = ppr c
-  pprPrec k (Case e ps) =
-    parensIf (k > 0) $
-      D.text "case"
-        D.<+> pprPrec 0 e
-        D.<+> D.text "of"
-        D.</> D.vcat (map pprPs ps)
-        D.</> D.text "end"
+
+  pprPrec k (Case e ps) = parensIf (k > 0) $
+    D.text "case" D.<+> pprPrec 0 e D.<+> D.text "of" D.</>
+    D.vcat (map pprPs ps) D.</>
+    D.text "end"
+    where
+      pprPs (p, c) = D.text "|" D.<+>
+                     D.align (pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c))
+  pprPrec k (CaseM e ps) = parensIf (k > 0) $
+    D.text "caseM" D.<+> pprPrec 0 e D.<+> D.text "of" D.</>
+    D.vcat (map pprPs ps) D.</>
+    D.text "end"
     where
       pprPs (p, c) =
         D.text "|"

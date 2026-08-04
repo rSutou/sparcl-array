@@ -374,7 +374,7 @@ procLoad fp = do
   localLastLoad fp $ do
     res <-
       checkError
-        (fmap Just $ fromFreshLoader $ readModule fp' (\env bind -> pure $ M.toList $ runEval (evalUBind env bind)))
+        (fmap Just $ fromFreshLoader $ readModule fp' (\env bind -> M.toList <$> runEval (evalUBind env bind)))
         (return Nothing)
     case res of
       Nothing -> do
@@ -422,7 +422,7 @@ procType str = do
 procExp :: String -> REPL ()
 procExp "" = waitCommand
 procExp str = do
-  res <- tryExec $ fromLoader $ valueOfExpressionStr str (\env bind -> pure $ runEval (evalUBindNoAcc env bind))
+  res <- tryExec $ fromLoader $ valueOfExpressionStr str (\env bind -> runEval (evalUBindNoAcc env bind))
 
   case res of
     Nothing -> waitCommand

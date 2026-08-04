@@ -1,0 +1,234 @@
+-- identity
+sig id : forall a p. rev a # p -> rev a
+def id x = x
+
+-- pair-destructer
+sig fst : (a, b) -> a
+def fst (a, _) = a
+
+sig scd : (a, b) -> b
+def scd (_, b) = b
+
+sig swap : rev (a, b) -o rev (b,a)
+def swap (rev (a, b)) = rev (b, a)
+
+-- unlifting-and-apply
+sig fwd : (rev a -o rev b) -> a -> b
+def fwd f = case unlift f of (x, _) -> x end 
+sig bwd : (rev a -o rev b) -> b -> a
+def bwd f = case unlift f of (_, x) -> x end 
+
+-- function transformers
+sig curry : (q <= ra, q <= rb) => ((a, b) # q -> c) # p -> a # ra -> b # rb -> c
+def curry f x y = f (x,y)
+sig uncurry : (ra <= q, rb <= q) => (a # ra -> b # rb -> c) # p -> (a, b) # q -> c
+def uncurry f (x,y) = f x y
+
+sig curryR : (rev (a, b) -o rev c) # p -> rev a -o rev b -o rev c
+def curryR f x y = f (rev (x,y))
+sig uncurryR : (rev a -o rev b -o rev c) # p -> rev (a, b) -o rev c
+def uncurryR f (rev (x,y)) = f x y
+
+-- 高階多引数関数の引数の順番を入れ替える
+-- unliftを使いやすくするためのもの
+sig argswap : (qa <= ra, qb <= rb) => (a # qa -> b # qb -> c) # p -> b # rb -> a # ra -> c
+def argswap f a b = f b a
+
+
+-- liftが必要になる構文
+-- invertは安全のはず
+sig invert : (rev a -o rev b) -> rev b -o rev a
+def invert f = case unlift f of (x,y) -> lift y x end
+-- uncurry lift (fwd swap (unlift f))
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig const : (a # p -> a # q -> Bool) -> a -> rev a
+def const eq c =
+	lift (\() -> c)
+		 (\c' -> let True <- eq c c' in ())
+		 (rev ())
+
+-- 与えられる関数eqが正当ならば安全のはず
+sig delete : (a # p -> a # q -> Bool) -> a -> rev a -o rev ()
+def delete eq c = invert (\(rev ()) -> const eq c)
+
+sig safelift : (a -> a -> Bool) -> (b -> b -> Bool) -> (a -> b) -> (b -> a) -> rev a -o rev b
+def safelift eqa eqb fw bw (rev a) =
+		let rev (a, b) <- pin a (\a' -> const eqb (fw a')) in
+		let rev (b, ()) <- pin b (\b' -> delete eqa (bw b') a) in
+		b
+
+-- apply関数(右項が引数)
+sig ($) : (p <= r) => (a # p -> b) # 1 -> a # r -> b
+def ($) f x = f x
+
+fixity $ 0 right 
+
+-- 関数合成関数(右項が関数)
+sig (.) : (qf <= px, qf <= pg, qg <= px) => (b # qf -> c) # pf -> (a # qg -> b) # pg -> a # px -> c
+def (.) f g = \x -> f (g x)
+
+fixity . 90 right
+
+
+-- bind operator
+sig (>>=) : forall a b. RevM a -o (rev a -o RevM b) -o RevM b
+def (>>=) a amb = bindRevM a amb
+
+fixity >>= 1 left
+
+-- inverted functions
+sig invertM : forall a b. (rev a -o RevM b) -> (rev b -o RevM a)
+def invertM f = case unliftM f of (fw, bw) -> liftM bw fw end
+
+sig deleteIArray : forall a p q r. (a # p -> a # q -> Bool) -> Int -> (Int # r -> a) -> rev (IArray a) -o rev ()
+def deleteIArray eq size g = invert $ generate eq size g
+
+sig checkLengthI : forall a. rev Int -o rev (IArray a) -o rev (IArray a)
+def checkLengthI = curryR $ invert $ lengthIArray
+
+sig thaw : forall a. rev (IArray a) -o RevM (MArray a)
+def thaw = invertM freezeMArray
+
+sig combine2 : forall a. Int -> rev (MArray a) -o rev (MArray a) -o rev (MArray a)
+def combine2 = curryR . invert . slice2
+
+sig combineAt : forall a. Int -> rev (MArray a, a, MArray a) -o RevM (MArray a)
+def combineAt = invertM . sliceAt
+
+sig curriedcombineAt : forall a. Int -> rev (MArray a) -o rev a -o rev (MArray a) -o RevM (MArray a)
+def curriedcombineAt i sl1 el2 sl3 = combineAt i (rev (sl1, el2, sl3))
+
+sig checkLengthM : forall a. rev Int -o rev (MArray a) -o rev (MArray a)
+def checkLengthM = curryR $ invert $ lengthMArray
+
+-- derived functions
+sig newMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev () -o RevM (MArray a)
+def newMArray eq size elm u = thaw $ generate eq size (\_ -> elm) u
+
+sig deleteMArray : forall a p q. (a # p -> a # q -> Bool) -> Int -> a -> rev (MArray a) -o RevM ()
+def deleteMArray eq size elm = invertM $ newMArray eq size elm 
+
+
+
+
+-- derived functions
+
+sig fwdM : (rev a -o RevM b) -> a -> M b
+def fwdM f = case unliftM f of (fw,_) -> fw end
+
+sig bwdM : (rev a -o RevM b) -> b -> M a
+def bwdM f = case unliftM f of (_,bw) -> bw end
+
+sig curryRM : (rev (a, b) -o RevM c) # p -> rev a -o rev b -o RevM c
+def curryRM f x y = f (rev (x,y))
+sig uncurryRM : (rev a -o rev b -o RevM c) # p -> rev (a, b) -o RevM c
+def uncurryRM f p = caseM p of rev (x,y) -> f x y end
+
+sig modifyMArray : Int -> (rev a -o rev a) -o rev (MArray a) -o RevM (MArray a)
+def modifyMArray i f arr = 
+		sliceAt i arr >>= 
+		(\p3 -> combineAt i $ case p3 of (rev (sl1, el2, sl3)) -> rev (sl1, f el2, sl3) end )
+		
+sig bindPin : forall a b. RevM a -o (a -> RevM b) -o RevM (a,b)
+def bindPin ra f = ra >>= (\p -> pinM p f)
+
+
+sig swapMArray : Int -> rev a -o rev (MArray a) -o RevM (a, MArray a)
+def swapMArray i a arr = 
+		sliceAt i arr >>= 
+		(\p3 -> caseM p3 of
+				(rev (sl1, el2, sl3)) -> combineAt i (rev (sl1,a,sl3)) >>= \ma -> pureRevM $ rev (el2, ma)
+				end)
+
+
+sig unPairM : RevM (a, b) -o (rev a -o rev b -o RevM c) -o RevM c
+def unPairM p f = p >>= \p -> caseM p of rev(a,b) -> f a b end
+
+sig unTripleM :RevM (a, b, c) -o (rev a -o rev b -o rev c -o RevM d) -o RevM d
+def unTripleM t f = t >>= \t -> caseM t of rev(a,b,c) -> f a b c end
+
+
+data Ord = Lt | Eq | Gt
+
+def compareInt i j = 
+	case eqInt i j of
+	True -> Eq
+	| False -> case ltInt i j of True -> Lt | False -> Gt end
+	end
+
+
+sig swap2 : Int -> Int -> rev (MArray a) -o RevM (MArray a)
+def swap2 i j ma = 
+	case compareInt i j of 
+	Eq -> pureRevM ma
+	| Lt -> 
+		unTripleM (sliceAt j ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray i e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt j s1 e2 s3
+	| Gt -> 
+		unTripleM (sliceAt i ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray j e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt i s1 e2 s3
+	end
+	
+sig swap2 : Int -> Int -> rev (MArray a) -o RevM (MArray a)
+def swap2 i j ma = 
+	case compareInt i j of 
+	  Eq -> pureRevM ma
+	| Lt -> 
+		unTripleM (sliceAt j ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray i e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt j s1 e2 s3
+	| Gt -> 
+		unTripleM (sliceAt i ma) $ \s1 -> \e2 -> \s3 ->
+		unPairM (swapMArray j e2 s1) $ \e2 -> \s1 ->
+		curriedcombineAt i s1 e2 s3
+	end
+
+sig reverse : Int -> Int -> rev (MArray a) -o RevM (MArray a)
+def reverse i j ma =
+		case compareInt i j of 
+		 Lt -> swap2 i j ma >>= reverse (i+1) (j-1)
+		| _ -> pureRevM ma
+		end
+
+		
+sig reverseAll : rev (MArray a) -o RevM (MArray a)
+def reverseAll a =
+		unPairM (pureRevM $ lengthMArray a) $ \l -> \a ->
+		unPairM (pinM l (\l' -> reverse 0 (l' - 1) a)) $ \l -> \a ->
+		pureRevM $ invert lengthMArray (rev (l,a))
+
+		
+sig makeRep : Int -> Int -> M (MArray Int)
+def makeRep l e = fwdM (newMArray eqInt l e) ()
+
+sig makeUp : Int -> M (MArray Int)
+def makeUp e = fwdM (thaw . generate eqInt e (\i -> i)) ()
+
+
+sig bindFreeze : M (MArray a) -> (MArray a -> M (MArray a)) -> M (IArray a)
+def bindFreeze ma f =
+		bindM ma $ \ma ->
+		bindM (f ma) $ 
+		fwdM freezeMArray
+
+		
+def runTest0 () = runM $ bindFreeze (makeUp 20) $ fwdM reverseAll
+def runTest1 () = runM $ bindFreeze (makeUp 20) $ bwdM reverseAll
+
+def runTest2 () = runM $ bindFreeze (makeUp 20) $ fwdM (reverse 5 8)
+def runTest3 () = runM $ bindFreeze (makeUp 20) $ bwdM (reverse 5 8)
+
+sig fwdMM : (rev a -o RevM b) -> M a -> M b
+def fwdMM f m =	bindM m (fwdM f)
+
+sig bwdMM : (rev a -o RevM b) -> M b -> M a
+def bwdMM f m =	bindM m (bwdM f)
+
+sig view : M (MArray a) -> IArray a
+def view ma = runM $ bindM ma $ fwdM freezeMArray
+
+sig freezeM : M (MArray a) -> M (IArray a)
+def freezeM = fwdMM freezeMArray
