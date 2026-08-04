@@ -132,12 +132,12 @@ hasPRev (Loc _ p) = go p
     go (PREV _) = True
     go _ = False
     
-isPRev :: LPat 'Renaming -> Bool
-isPRev (Loc _ p) = go p
-  where
-    go :: Pat 'Renaming -> Bool
-    go (PREV _)    = True
-    go _           = False
+-- isPRev :: LPat 'Renaming -> Bool
+-- isPRev (Loc _ p) = go p
+--   where
+--     go :: Pat 'Renaming -> Bool
+--     go (PREV _)    = True
+--     go _           = False
 
 checkPatsTyK ::
   [LPat 'Renaming]
@@ -504,8 +504,8 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       mul <- ty2mult (TyMetaV p)
 
       tyPat <- newMetaTy
-      (e0', umap0)   <- {- withMultVar (TyMetaV p) $ -} checkTyM e0 tyPat mul
-      (alts', umapA) <- {- withMultVar (TyMetaV p) $ -} checkMAltsTy alts tyPat mul expectedTy
+      (e0', umap0 {- withMultVar (TyMetaV p) $ -})   <-  checkTyM e0 tyPat mul
+      (alts', umapA {- withMultVar (TyMetaV p) $ -}) <-  checkMAltsTy alts tyPat mul expectedTy
 
       return (CaseM e0' alts', mergeUseMap umap0 umapA)
 
@@ -699,8 +699,11 @@ checkAltsTy alts patTy q bodyTy =
 --   return (p', c')
 
 checkMAltsTy ::
-  [ (LPat 'Renaming, Clause 'Renaming) ] ->
-  MonoTy -> Multiplication -> BodyTy -> TC ([ (LPat 'TypeCheck, Clause 'TypeCheck) ], UseMap)
+  [ (LPat 'Renaming, Clause 'Renaming) ] 
+  -> MonoTy 
+  -> Multiplication 
+  -> BodyTy 
+  -> TC ([ (LPat 'TypeCheck, Clause 'TypeCheck) ], UseMap)
 checkMAltsTy alts patTy q bodyTy =
   -- parallel $ map checkAltTy alts
   gatherAltUC =<< mapM checkAltTy alts
@@ -710,8 +713,8 @@ checkMAltsTy alts patTy q bodyTy =
       -- (c', umap)   <- withVars [ (n,t) | (n,t,_) <- bind ] $ checkClauseTy c bodyTy
 
       ~((c', umap), [pat'], bind) <- checkPatsTyK [pat] [q] [patTy] $ do
-          when (hasPRev pat) $ void $ ensureRevMTy bodyTy
-          checkClauseMTy c bodyTy
+        when (hasPRev pat) $ void $ ensureRevMTy bodyTy
+        checkClauseMTy c bodyTy
 
       let xqs = map (\(x,_,qq) -> (x,qq)) bind
       constrainVars xqs umap
@@ -940,11 +943,11 @@ checkClauseMTy (Clause e ws wi) expectedTy = do
   withVars bind $ do
     (e',  umapE) <- checkTy e expectedTy
     (wi', umapWi) <- case wi of
-             Just ewi -> do
-               ty   <- atLoc (location e) $ ensureRevMTy expectedTy
-               (ewi', umapWi) <- checkTyM ewi (ty *-> boolTy) omega
-               return (Just ewi', umapWi)
-             Nothing -> return (Nothing, M.empty)
+      Just ewi -> do
+        ty   <- atLoc (location e) $ ensureRevMTy expectedTy
+        (ewi', umapWi) <- checkTyM ewi (ty *-> boolTy) omega
+        return (Just ewi', umapWi)
+      Nothing -> return (Nothing, M.empty)
     return (Clause e' ws' wi', umap `mergeUseMap` umapE `mergeUseMap` umapWi)
 
 skolemize :: PolyTy -> TC ([TyVar], QualTy)

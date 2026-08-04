@@ -38,8 +38,6 @@ data Exp n
   | RCon !n ![Exp n]
   | RCase !(Exp n) ![ (Pat n, Exp n, Exp n ) ]
   | RPin  !(Exp n) !(Exp n)
-  
-  -- | RCaseM !(Exp n) ![ (Pat n, Exp n, Exp n ) ]
 
 
 freeVars :: Ord n => Exp n -> [n]

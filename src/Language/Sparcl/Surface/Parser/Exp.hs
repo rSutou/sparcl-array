@@ -466,38 +466,38 @@ funExpr =
             void $ keyword "in"
             e <- expr
             return $ Loc (startLoc <> location e) $ Let decls e)
-  <|>
-  (do void $ keyword "let"
-      p <- pat
-      void leftArrow
-      e1 <- expr
-      void $ keyword "in"
-      e2 <- expr
-      return $ Loc (startLoc <> location e2) $ Let1 p e1 e2)
-  <|>
-  (do void $ keyword "case"
-      e0   <- expr
-      void $ keyword "of"
-      alts <- alternatives
-      void $ keyword "end"
-      endLoc <- getSrcLoc
-      return $ Loc (startLoc <> endLoc) $ Case e0 alts)
-  <|>
-  (do void $ keyword "caseM"
-      e0   <- expr
-      void $ keyword "of"
-      alts <- alternatives
-      void $ keyword "end"
-      endLoc <- getSrcLoc
-      return $ Loc (startLoc <> endLoc) $ CaseM e0 alts)
-  <|>
-  (do void $ keyword "revdo"
-      as <- assignment `P.endBy` semicolon
-      void $ keyword "in"
-      e <- expr
-      return $ Loc (startLoc <> location e) $ RDO as e)
-  <|>
-  appExpr
+      <|>
+      (do void $ keyword "let"
+          p <- pat
+          void leftArrow
+          e1 <- expr
+          void $ keyword "in"
+          e2 <- expr
+          return $ Loc (startLoc <> location e2) $ Let1 p e1 e2)
+      <|>
+      (do void $ keyword "case"
+          e0   <- expr
+          void $ keyword "of"
+          alts <- alternatives
+          void $ keyword "end"
+          endLoc <- getSrcLoc
+          return $ Loc (startLoc <> endLoc) $ Case e0 alts)
+      <|>
+      (do void $ keyword "caseM"
+          e0   <- expr
+          void $ keyword "of"
+          alts <- alternatives
+          void $ keyword "end"
+          endLoc <- getSrcLoc
+          return $ Loc (startLoc <> endLoc) $ CaseM e0 alts)
+      <|>
+      (do void $ keyword "revdo"
+          as <- assignment `P.endBy` semicolon
+          void $ keyword "in"
+          e <- expr
+          return $ Loc (startLoc <> location e) $ RDO as e)
+      <|>
+      appExpr
 
 appExpr :: (Monad m) => P m (LExp 'Parsing)
 appExpr =

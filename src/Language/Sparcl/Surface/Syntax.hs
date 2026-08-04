@@ -235,14 +235,15 @@ instance (AllPretty p) => Pretty (Exp p) where
     where
       pprPs (p, c) = D.text "|" D.<+>
                      D.align (pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c))
+
   pprPrec k (CaseM e ps) = parensIf (k > 0) $
     D.text "caseM" D.<+> pprPrec 0 e D.<+> D.text "of" D.</>
     D.vcat (map pprPs ps) D.</>
     D.text "end"
     where
-      pprPs (p, c) =
-        D.text "|"
-          D.<+> D.align (pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c))
+      pprPs (p, c) = D.text "|" D.<+> 
+                     D.align (pprPrec 1 p D.<+> D.text "->" D.<+> D.nest 2 (ppr c))
+                     
   pprPrec _ Lift = text "lift"
   pprPrec _ Unlift = text "unlift"
   pprPrec _ (Parens e) = D.parens (pprPrec 0 e)

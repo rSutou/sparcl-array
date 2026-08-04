@@ -346,7 +346,7 @@ convertClauseRM (S.Clause body ws wi) = do
       return (body', we')
   where
     generateWithExp _ = withNewName $ \n ->
-      return $ C.Abs n (C.Con conTrue [])
+      return $ C.Abs n $ C.Con conTrue []
     -- generateWithExp _ = withNewName $ \n -> withNewName $ \n' ->
     --   -- FIXME: more sophisticated with-exp generation.
     --   return $ C.Bang $ C.Abs n $ C.Case (C.Var n) [ (C.PBang (C.PVar n'), C.Con conTrue []) ]

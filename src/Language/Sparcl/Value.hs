@@ -15,24 +15,26 @@ import Control.Monad (zipWithM)
 import Control.Monad.Fail
 import Control.Monad.Fix (MonadFix(..))
 import Control.Applicative (Alternative)
-import           Data.Array.IO (IOArray, mapArray)
-import           Data.Vector         as V (Vector, toList)
-import           Data.Vector.Mutable (MVector (MVector), IOVector, clone)
+
+import Data.Vector         as V (Vector, toList)
+-- import Data.Vector.Mutable (MVector (MVector), IOVector, clone)
+import Data.Vector.Mutable (MVector (MVector), IOVector)
 
 data Value
   = VCon !Name ![Value]
   | VLit !Literal
   | VFun !(Value -> Eval Value)
   | VRes !(Heap -> Eval Value) !(Value -> Eval Heap)
-           | VMArr !HeapStateAddr !Int !Int
-           | VISli !HeapState !HeapStateAddr !Int !Int
-           | VIArr !(Vector Value)
-           | VHSt !HeapState
+  
+  | VMArr !HeapStateAddr !Int !Int
+  | VISli !HeapState !HeapStateAddr !Int !Int
+  | VIArr !(Vector Value)
+  | VHSt !HeapState
 
 -- newtype Eval a = MkEval (Reader Int a) deriving (Functor, Applicative, Monad, MonadReader Int, MonadFix)
 newtype Eval a = MkEval (ReaderT Int IO a) deriving (Functor, Applicative, Alternative, Monad, MonadReader Int, MonadFix, MonadIO)
 
--- eqCheck :: Value -> Value -> Maybe Bool
+eqCheck :: Value -> Value -> Maybe Bool
 eqCheck (VLit l1) (VLit l2) = Just (l1 == l2)
 eqCheck (VCon n1 vs1) (VCon n2 vs2) = fmap (((n1 == n2 && length vs1 == length vs2) &&) . and) (zipWithM eqCheck vs1 vs2)
 eqCheck _ _ = Nothing
@@ -61,9 +63,9 @@ type Env = M.Map Name Value
 
 instance NFData Value where
   rnf (VCon c vs) = rnf (c, vs)
-  rnf (VLit l)    = rnf l
-  rnf (VFun _)    = ()
-  rnf (VRes _ _)  = ()
+  rnf (VLit l) = rnf l
+  rnf (VFun _) = ()
+  rnf (VRes _ _) = ()
   rnf (VMArr _ _ _) = ()
   rnf (VISli _ _ _ _) = ()
   rnf (VIArr _) = ()
@@ -84,6 +86,7 @@ instance Pretty Value where
   pprPrec _ (VLit l) = ppr l
   pprPrec _ (VFun _) = D.text "<function>"
   pprPrec _ (VRes _ _) = D.text "<reversible computation>"
+  
   pprPrec _ (VMArr {}) = D.text "<mutable array>"
   pprPrec _ (VISli {}) = D.text "<immutable slice>"
   pprPrec _ (VIArr imv) =  
