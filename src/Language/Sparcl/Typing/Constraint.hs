@@ -17,6 +17,7 @@ import Control.Monad (filterM, foldM, forM_, unless, when)
 import Data.List ((\\))
 import Language.Sparcl.Algorithm.SAT as SAT
 
+-- | Check whether given => wanted holds, with a certain substitution to @ex@. 
 solveInferredConstraint :: Bool -> [MetaTyVar] -> [TyConstraint] -> [InferredConstraint] -> TC [TyConstraint]
 solveInferredConstraint raiseError ex given wanted =
   solveInferredConstraintWork raiseError ex [] given wanted

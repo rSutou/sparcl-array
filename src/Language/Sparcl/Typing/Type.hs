@@ -60,6 +60,11 @@ data Ty = TyCon   !Name ![Ty]       -- ^ Type constructor
         | TyMult  !Multiplicity    -- ^ 1 or ω
          deriving (Eq, Ord, Show)
 
+pattern FunTy :: MultTy -> MonoTy -> MonoTy -> MonoTy
+pattern FunTy m argTy resTy <- TyCon ((== nameTyArr) -> True) [m, argTy,resTy] 
+  where 
+    FunTy m argTy resTy = TyCon nameTyArr [m, argTy, resTy]
+
 isMonoTy :: Ty -> Bool
 isMonoTy = isJust . testMonoTy
 

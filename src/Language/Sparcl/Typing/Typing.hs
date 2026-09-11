@@ -37,7 +37,10 @@ import qualified Language.Sparcl.Surface.Syntax as S
 import Language.Sparcl.Pretty as D hiding ((<$>))
 
 -- import Data.Maybe (isNothing)
+
+import Control.Monad.Catch (throwM)
 import Data.List (foldl', nub, (\\))
+import Language.Sparcl.Exception (cannotHappen)
 
 -- import Control.Exception (evaluate)
 -- import           Debug.Trace
@@ -84,6 +87,71 @@ msubMult m1 m2 = msub (m2ty m1) (m2ty m2)
 tryUnify :: Ty -> Ty -> TC ()
 tryUnify t1 t2 = whenChecking (CheckingEquality t1 t2) $ unify t1 t2
 
+-- See subsCheckSigma in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
+subsumptionCheckPoly :: Bool -> PolyTy -> PolyTy -> TC ()
+subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
+  -- save the current constraints, as checking discharges constraints in ty1
+  origCS <- readConstraint
+  setConstraint []
+
+  (skolTyVars, TyQual given ty2) <- skolemize polyTy2
+  subsumptionCheckBody isRightGiven ty1 ty2
+  cs <- readConstraint
+
+  -- Check if given => cs holds.
+  q <- solveInferredConstraint True [] given cs
+
+  unless (null q) $ do
+    reportError $ ImplicationCheckFail given q
+
+  let escaped = freeTyVars [ty1, polyTy2] \\ skolTyVars
+
+  unless (null escaped) $
+    reportError $
+      GeneralizeFail ty1 polyTy2 escaped
+
+  -- restore original constraints
+  setConstraint origCS
+
+-- See subsCheckRho in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
+subsumptionCheckBody :: Bool -> PolyTy -> BodyTy -> TC ()
+subsumptionCheckBody isRightGiven ty1_ ty2_ = do
+  ty1 <- zonkType ty1_
+  ty2 <- zonkType ty2_
+  case (ty1, ty2) of
+    (TyForAll _ _, _) -> do
+      bodyTy1 <- instantiate ty1 -- discharge constraint
+      subsumptionCheckBody isRightGiven bodyTy1 ty2
+    (FunTy m1 a1 r1, _) -> do
+      (a2, m2, r2) <- ensureFunTy ty2
+      subsumptionCheckFun isRightGiven a1 m1 r1 a2 m2 r2
+    (_, FunTy m2 a2 r2) -> do
+      (a1, m1, r1) <- ensureFunTy ty1
+      subsumptionCheckFun isRightGiven a1 m1 r1 a2 m2 r2
+    _ ->
+      if isRightGiven then tryUnify ty1 ty2 else tryUnify ty2 ty1
+
+subsumptionCheckFun :: Bool -> MonoTy -> MultTy -> MonoTy -> MonoTy -> MultTy -> MonoTy -> TC ()
+subsumptionCheckFun isRightGiven a1 m1 r1 a2 m2 r2 = do
+  -- To use a1 # m1 -> r1 as a2 # m2 -> r1, the following condition must hold
+  --  * a2 can be used as a1
+  --  * r1 can be used as r2
+  --  * m2 is more than m1 (it is safe to use a linear function as an unrestricted one)
+  addConstraint [MSub m1 [m2]] -- FIXME: shortcut the case where either one is constant
+  subsumptionCheckPoly (not isRightGiven) a2 a1
+  subsumptionCheckBody isRightGiven r1 r2
+
+instantiatePatPoly :: PolyTy -> Expected PolyTy -> TC ()
+instantiatePatPoly t (Infer ref) = writeTCRef ref t
+instantiatePatPoly t (Check t') = subsumptionCheckPoly True t t'
+
+instantiatePoly :: PolyTy -> Expected BodyTy -> TC ()
+instantiatePoly t (Infer ref) = do
+  t' <- instantiate t -- discharge constraints
+  writeTCRef ref t'
+instantiatePoly t (Check t') = do
+  subsumptionCheckBody True t t' -- discharge constraints of t
+
 instantiate :: PolyTy -> TC MonoTy
 instantiate t = do
   TyQual cs' t' <- instantiateQ t
@@ -98,19 +166,33 @@ instantiateQ (TyForAll ts qt) = do
   return $ substTyQ subs qt
 instantiateQ t = return $ TyQual [] t
 
-ensureRevTy :: MonoTy -> TC MonoTy
+expectRevTy :: Expected BodyTy -> TC BodyTy
+expectRevTy expectedTy = do
+  dummy <- newMetaTy
+  instantiatePoly (revTy dummy) expectedTy
+  pure dummy
+
+ensureRevTy :: BodyTy -> TC BodyTy
 ensureRevTy ty = do
   argTy <- newMetaTy
   tryUnify (revTy argTy) ty
   return argTy
 
-ensureFunTy :: MonoTy -> TC (MonoTy, MonoTy, MonoTy)
+ensureFunTy :: BodyTy -> TC (PolyTy, MultTy, BodyTy)
+ensureFunTy (FunTy m argTy resTy) = pure (argTy, m, resTy)
 ensureFunTy ty = do
   argTy <- newMetaTy
   m <- newMetaTy
   resTy <- newMetaTy
-  tryUnify (TyCon nameTyArr [m, argTy, resTy]) ty
+  tryUnify (FunTy m argTy resTy) ty
   return (argTy, m, resTy)
+
+ensureFunTyN :: Int -> BodyTy -> TC ([(PolyTy, MultTy)], BodyTy)
+ensureFunTyN 0 ty = pure ([], ty)
+ensureFunTyN n ty = do
+  (argTy, m, rest) <- ensureFunTy ty
+  (args, resTy) <- ensureFunTyN (n - 1) rest
+  pure ((argTy, m) : args, resTy)
 
 litTy :: Literal -> TC MonoTy
 litTy (LitInt _) = return $ TyCon nameTyInt []
@@ -129,9 +211,9 @@ hasPRev (Loc _ p) = go p
 checkPatsTyK ::
   [LPat 'Renaming]
   -> [Multiplication]
-  -> [MonoTy]
+  -> [Expected PolyTy]
   -> TC a
-  -> TC (a, [LPat 'TypeCheck], [(Name, MonoTy, Multiplication)])
+  -> TC (a, [LPat 'TypeCheck], [(Name, PolyTy, Multiplication)])
 checkPatsTyK ps ms ts comp = do
   (req, cs, ps', bind) <- checkPatsTy ps ms ts
   readConstraint >>= \r -> debugPrint 4 $ red $ "CC:" <+> ppr r
@@ -151,8 +233,8 @@ checkPatsTyK ps ms ts comp = do
 checkPatsTy ::
   [LPat 'Renaming]
   -> [Multiplication]
-  -> [MonoTy]
-  -> TC (Bool, [TyConstraint], [LPat 'TypeCheck], [(Name, MonoTy, Multiplication)])
+  -> [Expected PolyTy]
+  -> TC (Bool, [TyConstraint], [LPat 'TypeCheck], [(Name, PolyTy, Multiplication)])
 checkPatsTy [] [] [] = return (False, [], [], [])
 checkPatsTy (p : ps) (m : ms) (t : ts) = do
   (req_ps, cs_ps, ps', bind) <- checkPatsTy ps ms ts
@@ -163,14 +245,44 @@ checkPatsTy _ _ _ = error "Cannot happen."
 checkPatTy ::
   LPat 'Renaming
   -> Multiplication
-  -> MonoTy
-  -> TC (Bool, [TyConstraint], LPat 'TypeCheck, [(Name, MonoTy, Multiplication)])
+  -> Expected PolyTy
+  -> TC (Bool, [TyConstraint], LPat 'TypeCheck, [(Name, PolyTy, Multiplication)])
 checkPatTy = checkPatTyWork False
 
 checkGADTConstructorInRev :: SrcSpan -> Name -> TC ()
 checkGADTConstructorInRev loc c = do
   ConTy _ ys constr args _ <- askConType loc c
   unless (null ys && null constr && all (isMultiplicityOne . snd) args) $
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
+
     -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
     reportError $
       Other $
@@ -183,14 +295,19 @@ checkPatTyWork ::
   Bool
   -> LPat 'Renaming
   -> Multiplication
-  -> MonoTy
-  -> TC (Bool, [TyConstraint], LPat 'TypeCheck, [(Name, MonoTy, Multiplication)])
-checkPatTyWork isUnderRev (Loc loc pat) pmult patTy = do
+  -> Expected PolyTy
+  -> TC (Bool, [TyConstraint], LPat 'TypeCheck, [(Name, PolyTy, Multiplication)])
+checkPatTyWork isUnderRev (Loc loc pat) pmult expected = do
   (req, cs, pat', bind) <- atLoc loc $ go pat
   return (req, cs, Loc loc pat', bind)
   where
-    go (PVar x) =
-      return (False, [], PVar (x, patTy), [(x, patTy, pmult)])
+    go (PVar x)
+      | Infer ref <- expected = do
+          ty <- newMetaTy
+          writeTCRef ref ty
+          pure (False, [], PVar (x, ty), [(x, ty, pmult)])
+      | Check pTy <- expected =
+          return (False, [], PVar (x, pTy), [(x, pTy, pmult)])
     go (PCon c ps) = do
       ConTy xs ys q_ args_ ret_ <- askConType loc c
 
@@ -219,14 +336,14 @@ checkPatTyWork isUnderRev (Loc loc pat) pmult patTy = do
               ]
         abortTyping
 
-      tryUnify ret patTy
+      instantiatePatPoly ret expected
 
       (req, cs, ps', bind) <-
         foldr (\(reqj, csj, pj', bindj) (req, cs, ps', bind) -> (reqj || req, csj ++ cs, pj' : ps', bindj ++ bind)) (False, [], [], [])
           <$> zipWithM
             ( \pj (tj, mj) -> do
                 m <- ty2mult mj
-                checkPatTyWork isUnderRev pj (lub m pmult) tj
+                checkPatTyWork isUnderRev pj (lub m pmult) (Check tj)
             )
             ps
             args
@@ -240,8 +357,9 @@ checkPatTyWork isUnderRev (Loc loc pat) pmult patTy = do
             Other $
               text "rev patterns cannot be nested."
 
-      ty <- ensureRevTy patTy
-      (req, cs, p', bind) <- checkPatTyWork True p pmult ty
+      ty <- newMetaTy
+      instantiatePatPoly (revTy ty) expected
+      (req, cs, p', bind) <- checkPatTyWork True p pmult (Check ty)
       let bind' = map (\(x, t, m) -> (x, revTy t, m)) bind
 
       forM_ bind' $ \(x, _, m) ->
@@ -253,7 +371,7 @@ checkPatTyWork isUnderRev (Loc loc pat) pmult patTy = do
     go (PWild x) = do
       -- this is only possible when pmult is omega
       -- tryUnify pmult (TyMult Omega)
-      ~(req, cs, Loc _ (PVar x'), _bind) <- checkPatTyWork isUnderRev (noLoc $ PVar x) omega patTy
+      (req, cs, Loc _ (PVar x'), _bind) <- checkPatTyWork isUnderRev (noLoc $ PVar x) omega expected
       -- cs must be []
       addConstraint $ msubMult omega pmult
       return (req, cs, PWild x', [])
@@ -301,16 +419,22 @@ inferTy (Loc loc expr) = go expr
     --   -- (e', umap, cs) <- checkTy e ty'
     --   return (e', ty', umap, cs'++cs)
     go e = do
-      ty <- newMetaTy
-      (e', umap) <- checkTy (Loc loc e) ty
+      ref <- newTCRef (error "inferTy: empty result")
+      (e', umap) <- checkTy (Loc loc e) (Infer ref)
+      ty <- readTCRef ref
       return (e', ty, umap)
 
-checkTyM :: LExp 'Renaming -> BodyTy -> Multiplication -> TC (LExp 'TypeCheck, UseMap)
+inferTyM :: LExp 'Renaming -> Multiplication -> TC (LExp 'TypeCheck, BodyTy, UseMap)
+inferTyM lexp m = do
+  (lexp', ty, umap) <- inferTy lexp
+  pure (lexp', ty, raiseUse m umap)
+
+checkTyM :: LExp 'Renaming -> Expected BodyTy -> Multiplication -> TC (LExp 'TypeCheck, UseMap)
 checkTyM lexp ty m = do
   (lexp', umap) <- checkTy lexp ty
   return (lexp', raiseUse m umap)
 
-checkTy :: LExp 'Renaming -> BodyTy -> TC (LExp 'TypeCheck, UseMap)
+checkTy :: LExp 'Renaming -> Expected BodyTy -> TC (LExp 'TypeCheck, UseMap)
 checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ atExp lexp $ go expr
   where
     -- first3 f (a,b,c) = (f a, b, c)
@@ -319,8 +443,8 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
     go (WTup es) = do
       let n = length es
       tys <- mapM (const newMetaTy) [1 .. n]
-      tryUnify (TyCon (nameTyWTuple n) tys) expectedTy
-      (es', ms) <- unzip <$> zipWithM checkTy es tys
+      instantiatePoly (TyCon (nameTyWTuple n) tys) expectedTy
+      (es', ms) <- unzip <$> zipWithM checkTy es (map Check tys)
       let m = if null ms then M.empty else foldr1 multiplyUseMap ms
       pure (WTup es', m)
     go (WProj i n) = do
@@ -328,56 +452,66 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       tys <- mapM (const newMetaTy) [1 .. n]
       let ti = tys !! i
       let wTupleTy = TyCon (nameTyWTuple n) tys
-      (argTy, _, resTy) <- ensureFunTy expectedTy
-      tryUnify wTupleTy argTy
-      tryUnify ti resTy
+
+      instantiatePoly (FunTy wTupleTy (TyMult One) ti) expectedTy
       pure (WProj i n, emptyUseMap)
     go (Var x) = do
       tyOfX <- askType loc x
-      t <- instantiate tyOfX
-      tryUnify t expectedTy
+      instantiatePoly tyOfX expectedTy
       return (Var (x, tyOfX), singletonUseMap x)
     go (Lit l) = do
       ty <- litTy l
-      tryUnify ty expectedTy
+      instantiatePoly ty expectedTy
       return (Lit l, M.empty)
-    go (Abs pats e) = do
+    go (Abs pats e) | Check eTy <- expectedTy = do
+      (tqs, resTy) <- ensureFunTyN (length pats) eTy
+
+      qs <- mapM (ty2mult . snd) tqs
+      let ts = map fst tqs
+
+      ((e', umap), pats', bind) <- checkPatsTyK pats qs (map Check ts) $ do
+        when (any hasPRev pats) $ do
+          dummy <- newMetaTy
+          instantiatePoly (revTy dummy) expectedTy
+        checkTy e (Check resTy)
+
+      let xqs = map (\(x, _, q) -> (x, q)) bind
+      atLocMaybe (locPS pats) $ constrainVars xqs umap
+
+      pure (Abs pats' e', foldr (M.delete . fst) umap xqs)
+    go (Abs pats e) | Infer ref <- expectedTy = do
       -- multiplicity of arguments
-      qs <- mapM (const newMetaTy) pats
       ts <- mapM (const newMetaTy) pats
+      qs <- mapM (const newMetaTy) pats
       qs' <- mapM ty2mult qs
 
-      retTy <- newMetaTy
-
-      ((e', umap), pats', bind) <- checkPatsTyK pats qs' ts $ do
+      ((e', retTy, umap), pats', bind) <- checkPatsTyK pats qs' (map Check ts) $ do
+        res@(_, retTy, _) <- inferTy e
         when (any hasPRev pats) $ void $ ensureRevTy retTy
-        checkTy e retTy
+        pure res
 
       let xqs = map (\(x, _, q) -> (x, q)) bind
 
-      tryUnify (foldr (uncurry tyarr) retTy $ zip qs ts) expectedTy
       atLocMaybe (locPS pats) $ constrainVars xqs umap
+      writeTCRef ref (foldr (uncurry tyarr) retTy $ zip qs ts)
 
       return (Abs pats' e', foldr (M.delete . fst) umap xqs)
     go (App e1 e2) = do
       (e1', ty1, umap1) <- inferTy e1
       (argTy, m, resTy) <- atExp e1 $ atLoc (location e1) $ ensureFunTy ty1
       mul <- ty2mult m
-      (e2', umap2) <- checkTyM e2 argTy mul
-
-      tryUnify resTy expectedTy
-
+      (e2', umap2) <- checkPolyTyM e2 argTy mul
+      instantiatePoly resTy expectedTy
       return (App e1' e2', mergeUseMap umap1 umap2)
     go (Let1 p e1 e2) = do
-      qPat <- newMetaTy
-      qPat' <- ty2mult qPat
+      patMult <- ty2mult =<< newMetaTy
+      (e1', ty1, umap1) <- inferTyM e1 patMult
 
-      ty1 <- newMetaTy
-
-      (e1', umap1) <- checkTyM e1 ty1 qPat'
-
-      ((e2', umap2), ~[p'], bind) <- checkPatsTyK [p] [qPat'] [ty1] $ do
-        when (hasPRev p) $ void $ ensureRevTy expectedTy
+      ((e2', umap2), [p'], bind) <- checkPatsTyK [p] [patMult] [Check ty1] $ do
+        when (hasPRev p) $ do
+          -- When p contains rev, we ensure that expectedTy must the form of rev _
+          dummy <- newMetaTy
+          instantiatePoly (revTy dummy) expectedTy
         checkTy e2 expectedTy
 
       let xqs = map (\(x, _, q) -> (x, q)) bind
@@ -388,40 +522,17 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       return (Let1 p' e1' e2', mergeUseMap umap1 umap2')
     go (Con c) = do
       tyOfC <- askType loc c
-      t <- instantiate tyOfC
-      tryUnify t expectedTy
-      return (Con (c, t), M.empty)
-    go (Sig e tySyn) = do
-      let sigTy = ty2ty tySyn
-
-      -- (e', polyTy, umap) <- inferPolyTy False e
-      -- tryCheckMoreGeneral loc polyTy sigTy
-
-      (e', eTy, umap) <- pushLevel $ do
-        eTy <- newMetaTy
-        (e', umap) <- checkTy e eTy
-        return (e', eTy, umap)
-
-      checkGeneralizeTy loc False eTy umap sigTy
-
-      monoTy <- instantiate sigTy
-
-      -- liftIO $ print $ red $ text "CSI:" <+> ppr csI
-      -- liftIO $ print $ red $ text "CSO:" <+> ppr csO
-
-      tryUnify monoTy expectedTy
-      return (unLoc e', umap)
-
-    -- let ty = ty2ty tySyn
-    -- (cs, ty') <- instantiate ty
-    -- tryUnify ty' expectedTy
-    -- (e', umap, cs') <- checkTy e ty'
-    -- return (unLoc e', umap, cs ++ cs')
-
+      instantiatePoly tyOfC expectedTy
+      return (Con (c, tyOfC), M.empty)
+    go (Sig e ty_) = do
+      let annTy = ty2ty ty_
+      (e', umap) <- checkPolyTy e annTy
+      instantiatePoly annTy expectedTy
+      pure (unLoc e', umap)
     go Lift = do
       tyA <- newMetaTy
       tyB <- newMetaTy
-      tryUnify (liftTy tyA tyB) expectedTy
+      instantiatePoly (liftTy tyA tyB) expectedTy
       return (Lift, M.empty)
       where
         liftTy tyA tyB =
@@ -429,7 +540,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
     go Unlift = do
       tyA <- newMetaTy
       tyB <- newMetaTy
-      tryUnify (unliftTy tyA tyB) expectedTy
+      instantiatePoly (unliftTy tyA tyB) expectedTy
       return (Unlift, M.empty)
       where
         unliftTy tyA tyB =
@@ -437,7 +548,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
     go RPin = do
       tyA <- newMetaTy
       tyB <- newMetaTy
-      tryUnify (pinTy tyA tyB) expectedTy
+      instantiatePoly (pinTy tyA tyB) expectedTy
       return (RPin, M.empty)
       where
         pinTy tyA tyB =
@@ -447,44 +558,41 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       return (Parens e', umap)
     go (Op op e1 e2) = do
       tyOfOp <- instantiate =<< askType loc op
-      ty1 <- newMetaTy
-      ty2 <- newMetaTy
-      m1 <- newMetaTy
-      m2 <- newMetaTy
+      (ty1, m1, rest) <- ensureFunTy tyOfOp
+      (ty2, m2, resTy) <- ensureFunTy rest
+      (e1', umap1) <- checkTyM e1 (Check ty1) =<< ty2mult m1
+      (e2', umap2) <- checkTyM e2 (Check ty2) =<< ty2mult m2
 
-      mul1 <- ty2mult m1
-      mul2 <- ty2mult m2
-
-      tryUnify tyOfOp (TyCon nameTyArr [m1, ty1, TyCon nameTyArr [m2, ty2, expectedTy]])
-      (e1', umap1 {- withMultVars [m1,m2] $ -}) <- checkTyM e1 ty1 mul1
-      (e2', umap2 {- withMultVars [m1,m2] $ -}) <- checkTyM e2 ty2 mul2
-      return (Op (op, tyOfOp) e1' e2', mergeUseMap umap1 umap2)
+      instantiatePoly resTy expectedTy
+      pure (Op (op, tyOfOp) e1' e2', mergeUseMap umap1 umap2)
     go (RCon c) = do
-      tyOfC_ <- instantiate =<< askType loc c
+      tyOfC_ <- askType loc c
 
       -- Reject GADT-style constructors
       checkGADTConstructorInRev loc c
 
       let tyOfC = addRev tyOfC_
-      tryUnify tyOfC expectedTy
+      instantiatePoly tyOfC expectedTy
       return (RCon (c, tyOfC), M.empty)
       where
+        addRev (TyForAll xs (TyQual cs t)) = TyForAll xs (TyQual cs $ addRev t)
         -- FIXME: m must be one
         addRev (TyCon t [m, t1, t2]) | t == nameTyArr = TyCon t [m, revTy t1, addRev t2]
         addRev t = revTy t
     go (Let decls e) = do
       (decls', bind, umapLet) <- inferDecls False decls
-      (e', umap {- withUnrestrictedVars -}) <- withVars bind $ checkTy e expectedTy
+      (e', umap) <- withVars bind $ checkTy e expectedTy
       return (Let decls' e', mergeUseMap umap umapLet)
     go (Case e0 alts) = do
-      p <- newMetaTyVar -- multiplicity of `e`
+      p <- newMetaTyVar -- multiplicity of e0
       mul <- ty2mult (TyMetaV p)
 
-      tyPat <- newMetaTy
-      (e0', umap0 {- withMultVar (TyMetaV p) $ -}) <- checkTyM e0 tyPat mul
-      (alts', umapA {- withMultVar (TyMetaV p) $ -}) <- checkAltsTy alts tyPat mul expectedTy
+      (e0', tyPat, umap0) <- inferTyM e0 mul
+      (alts', umapA) <- checkAltsTy alts tyPat mul expectedTy
 
       return (Case e0' alts', mergeUseMap umap0 umapA)
+
+    -- NB: This constructor will be removed in near future.
     go (RDO as0 er) = do
       (as0', bind, umap) <- goAs as0
       let bind' = map (\(x, t, _) -> (x, revTy t)) bind
@@ -499,7 +607,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
         goAs [] = return ([], [], M.empty)
         goAs ((p, e) : as) = do
           tyE <- newMetaTy
-          (e', umapE) <- checkTy e (revTy tyE)
+          (e', umapE) <- checkTy e (Check $ revTy tyE)
 
           -- (p', bind)  <- checkPatTy p omega tyE
 
@@ -507,7 +615,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
 
           -- (as', bindAs, umapAs) <- withVars [ (n,t) | (n,t,_) <- bind ] $ goAs as
 
-          ((as', bindAs, umapAs), ~[p'], bind) <- checkPatsTyK [p] [omega] [tyE] $ do
+          ((as', bindAs, umapAs), [p'], bind) <- checkPatsTyK [p] [omega] [Check tyE] $ do
             goAs as
           let xqs = map (\(x, _, q) -> (x, q)) bind
 
@@ -525,10 +633,40 @@ checkGeneralizeTy loc isTopLevel ty um polyTy2
   , Just monoTy2 <- testMonoTy polyTy2 =
       atLoc loc $ unify ty monoTy2
   | otherwise =
-      checkPolyTy loc ty um polyTy2
+      checkPolymorphicEnough loc ty um polyTy2
 
-checkPolyTy :: SrcSpan -> MonoTy -> UseMap -> PolyTy -> TC ()
-checkPolyTy loc ty1_ um polyTy2 = atLoc loc $ do
+checkPolyTyM :: LExp 'Renaming -> PolyTy -> Multiplication -> TC (LExp 'TypeCheck, UseMap)
+checkPolyTyM lexp ty m = do
+  (lexp', umap) <- checkPolyTy lexp ty
+  return (lexp', raiseUse m umap)
+
+checkPolyGen :: PolyTy -> (BodyTy -> TC (a, UseMap)) -> TC (a, UseMap)
+checkPolyGen ty k = do
+  (skolemTyVars, TyQual given bodyTy) <- skolemize ty
+
+  ((res, umap), csExp) <- gatherConstraint $ k bodyTy
+
+  -- FIXME: is the following really ok?
+  if null given
+    then do csOrig <- readConstraint; setConstraint (csExp ++ csOrig)
+    else addImpConstraint given csExp
+
+  umapVars <- freeTyVars <$> mapM zonkType [t | m <- M.elems umap, t <- m2ty m]
+  tyVars <- freeTyVars <$> zonkType ty
+
+  let escaped = filter (`elem` (tyVars ++ umapVars)) skolemTyVars
+
+  unless (null escaped) $
+    reportError $
+      CannotHavePolyTy ty escaped
+
+  pure (res, umap)
+
+checkPolyTy :: LExp 'Renaming -> PolyTy -> TC (LExp 'TypeCheck, UseMap)
+checkPolyTy lexp ty = checkPolyGen ty (checkTy lexp . Check)
+
+checkPolymorphicEnough :: SrcSpan -> MonoTy -> UseMap -> PolyTy -> TC ()
+checkPolymorphicEnough loc ty1_ um polyTy2 = atLoc loc $ do
   debugPrint 4 $ "PolyTy" <+> text (show polyTy2)
   ty1 <- zonkType ty1_
   cs <- mapM zonkTypeIC =<< readConstraint
@@ -649,9 +787,9 @@ inferExp expr = do
 
 checkAltsTy ::
   [(LPat 'Renaming, Clause 'Renaming)]
-  -> MonoTy
-  -> Multiplication
   -> BodyTy
+  -> Multiplication
+  -> Expected BodyTy
   -> TC ([(LPat 'TypeCheck, Clause 'TypeCheck)], UseMap)
 checkAltsTy alts patTy q bodyTy =
   -- parallel $ map checkAltTy alts
@@ -661,8 +799,10 @@ checkAltsTy alts patTy q bodyTy =
       -- (pat', bind) <- checkPatTy pat q patTy
       -- (c', umap)   <- withVars [ (n,t) | (n,t,_) <- bind ] $ checkClauseTy c bodyTy
 
-      ~((c', umap), [pat'], bind) <- checkPatsTyK [pat] [q] [patTy] $ do
-        when (hasPRev pat) $ void $ ensureRevTy bodyTy
+      ((c', umap), [pat'], bind) <- checkPatsTyK [pat] [q] [Check patTy] $ do
+        when (hasPRev pat) $ do
+          dummy <- newMetaTy
+          instantiatePoly (revTy dummy) bodyTy
         checkClauseTy c bodyTy
 
       let xqs = map (\(x, _, qq) -> (x, qq)) bind
@@ -761,78 +901,135 @@ inferMutual ::
   -> [LDecl 'Renaming]
   -> TC ([LDecl 'TypeCheck], [(Name, PolyTy)], UseMap)
 inferMutual isTopLevel decls = do
-  --  let nes = [ (n,e) | Loc _ (DDef n _) <- decls ]
-  let ns = [n | Loc _ (DDef n _) <- decls]
+  let names = [n | Loc _ (DDef n _) <- decls]
   let defs = [(loc, n, pcs) | Loc loc (DDef n pcs) <- decls]
   let sigMap = M.fromList [(n, ty2ty t) | Loc _ (DSig n t) <- decls]
 
-  -- save current constraint at the point
-  csOrig <- readConstraint
-  setConstraint []
-
   (nts0, umap) <- pushLevel $ do
-    tys <-
-      forM
-        ns
-        ( \n -> case M.lookup n sigMap of
-            Just t -> return t
-            Nothing -> newMetaTy
-        )
-    (nts0, umap) <- fmap gatherU $ withVars (zip ns tys) $ forM defs $ \(loc, n, pcs) -> do
-      -- body's type
-      ty <- newMetaTy
-      -- argument's multiplicity
-      qs <- mapM (const newMetaTy) [1 .. numPatterns pcs]
+    tys <- forM names $ \n -> case M.lookup n sigMap of
+      Just t -> pure t
+      Nothing -> newMetaTy
 
-      (pcs', umap) <- gatherAltUC =<< mapM (flip (checkTyPC loc qs) ty) pcs
+    fmap gatherU $ withVars (zip names tys) $ forM defs $ \(loc, n, pcs) -> do
+      case M.lookup n sigMap of
+        Nothing -> do
+          bodyTy <- newMetaTy
+          (args, resTy) <- ensureFunTyN (numPatterns pcs) bodyTy
+          ((pcs', umap), cs) <- gatherConstraint $ gatherAltUC =<< mapM (checkTyPC loc args resTy) pcs
+          pure ((n, loc, Left (cs, bodyTy), pcs'), raiseUse omega umap)
+        Just polyTy -> do
+          -- defer escape check
+          (skVars, TyQual given bodyTy) <- skolemize polyTy
 
-      -- type of n in the environment
-      tyE <- askType loc n
+          (args, resTy) <- ensureFunTyN (numPatterns pcs) bodyTy
+          ((pcs', umap), cs) <- gatherConstraint $ gatherAltUC =<< mapM (checkTyPC loc args resTy) pcs
 
-      unless (M.member n sigMap) $
-        -- unify the body type and returned type
-        atLoc loc $
-          tryUnify ty tyE
+          if null given
+            then do csCurr <- readConstraint; setConstraint (cs ++ csCurr)
+            else addImpConstraint given cs
 
-      -- cut the current constraint
-      cs <- readConstraint
-      setConstraint []
+          pure ((n, loc, Right (skVars, polyTy), pcs'), raiseUse omega umap)
 
-      return ((n, loc, ty, cs, pcs'), raiseUse omega umap)
+  let skVarss = [(n, loc, sks, polyTy) | (n, loc, Right (sks, polyTy), _) <- nts0]
 
-    return (nts0, umap)
+  nts1 <- forM nts0 $ \(n, loc, tt, pcs') -> case tt of
+    Left (cs, bodyTy) -> do
+      csOrig <- readConstraint
+      setConstraint cs
 
-  nts1 <- forM nts0 $ \(n, loc, ty, cs, pcs') -> do
-    csO <- readConstraint
-    -- Assuming that the current constraint is empty
-    setConstraint cs
+      -- NB: No type variables exacpe in the useMap so using emptyUseMap is OK.
+      polyTy <- tryGeneralizeTy isTopLevel bodyTy emptyUseMap
 
-    res <- case M.lookup n sigMap of
-      Nothing -> do
-        -- NB: No type variables exacpe in the useMap so using emptyUseMap is OK.
-        polyTy <- tryGeneralizeTy isTopLevel ty emptyUseMap
-        return (n, loc, polyTy, pcs')
-      Just sigTy -> do
-        -- if a function comes with a signature, we check that its inferred type is more polymorphic than
-        -- the signature
-        checkGeneralizeTy loc isTopLevel ty emptyUseMap sigTy
-        return (n, loc, sigTy, pcs')
+      do csCurr <- readConstraint; setConstraint (csCurr ++ csOrig)
+      pure (n, loc, polyTy, pcs')
+    Right (_, polyTy) -> pure (n, loc, polyTy, pcs')
 
-    do
-      cs' <- readConstraint
-      setConstraint (csO ++ cs')
-    return res
+  tyVars <- freeTyVars <$> mapM (\(_, _, ty, _) -> zonkType ty) nts1
+
+  forM_ skVarss $ \(n, loc, skVars, polyTy) -> do
+    let escaped = filter (`elem` tyVars) skVars
+    unless (null escaped) $
+      atLoc loc $
+        reportError $
+          CannotHavePolyTy polyTy escaped
 
   let decls' = [Loc loc (DDef (n, ty) pcs') | (n, loc, ty, pcs') <- nts1]
   let binds' = [(n, ty) | (n, _, ty, _) <- nts1]
 
-  -- restore the original constraint
-  do
-    cs' <- readConstraint
-    setConstraint (csOrig ++ cs')
-
-  return (decls', binds', umap)
+  pure (decls', binds', umap)
   where
+    -- --  let nes = [ (n,e) | Loc _ (DDef n _) <- decls ]
+    -- let ns = [n | Loc _ (DDef n _) <- decls]
+    -- let defs = [(loc, n, pcs) | Loc loc (DDef n pcs) <- decls]
+    -- let sigMap = M.fromList [(n, ty2ty t) | Loc _ (DSig n t) <- decls]
+
+    -- -- save current constraint at the point
+    -- csOrig <- readConstraint
+    -- setConstraint []
+
+    -- (nts0, umap) <- pushLevel $ do
+    --   tys <-
+    --     forM
+    --       ns
+    --       ( \n -> case M.lookup n sigMap of
+    --           Just t -> return t
+    --           Nothing -> newMetaTy
+    --       )
+    --   (nts0, umap) <- fmap gatherU $ withVars (zip ns tys) $ forM defs $ \(loc, n, pcs) -> do
+    --     -- body's type
+    --     ty <- newMetaTy
+    --     -- argument's multiplicity
+    --     qs <- mapM (const newMetaTy) [1 .. numPatterns pcs]
+
+    --     (pcs', umap) <- gatherAltUC =<< mapM (flip (checkTyPC loc qs) ty) pcs
+
+    --     -- type of n in the environment
+    --     tyE <- askType loc n
+
+    --     unless (M.member n sigMap) $
+    --       -- unify the body type and returned type
+    --       atLoc loc $
+    --         tryUnify ty tyE
+
+    --     -- cut the current constraint
+    --     cs <- readConstraint
+    --     setConstraint []
+
+    --     return ((n, loc, ty, cs, pcs'), raiseUse omega umap)
+
+    --   return (nts0, umap)
+
+    -- nts1 <- forM nts0 $ \(n, loc, ty, cs, pcs') -> do
+    --   csO <- readConstraint
+    --   -- Assuming that the current constraint is empty
+    --   setConstraint cs
+
+    --   res <- case M.lookup n sigMap of
+    --     Nothing -> do
+    --       -- NB: No type variables exacpe in the useMap so using emptyUseMap is OK.
+    --       polyTy <- tryGeneralizeTy isTopLevel ty emptyUseMap
+    --       return (n, loc, polyTy, pcs')
+    --     Just sigTy -> do
+    --       -- if a function comes with a signature, we check that its inferred type is more polymorphic than
+    --       -- the signature
+    --       checkGeneralizeTy loc isTopLevel ty emptyUseMap sigTy
+    --       return (n, loc, sigTy, pcs')
+
+    --   do
+    --     cs' <- readConstraint
+    --     setConstraint (csO ++ cs')
+    --   return res
+
+    -- let decls' = [Loc loc (DDef (n, ty) pcs') | (n, loc, ty, pcs') <- nts1]
+    -- let binds' = [(n, ty) | (n, _, ty, _) <- nts1]
+
+    -- -- restore the original constraint
+    -- do
+    --   cs' <- readConstraint
+    --   setConstraint (csOrig ++ cs')
+
+    -- return (decls', binds', umap)
+
     numPatterns ((ps, _) : _) = length ps
     numPatterns _ = error "Cannot happen."
 
@@ -852,19 +1049,13 @@ inferMutual isTopLevel decls = do
     --   let (xs, u',c') = gatherUC ts
     --   in  (x:xs, mergeUseMap u u', c ++ c')
 
-    checkTyPC loc qs (ps, c) expectedTy = atLoc loc $ do
-      muls <- mapM ty2mult qs
-      tys <- mapM (const newMetaTy) ps
-      retTy <- newMetaTy
+    checkTyPC loc argTys resTy (ps, c) = atLoc loc $ do
+      muls <- mapM (ty2mult . snd) argTys
+      let tys = map fst argTys
 
-      -- (ps', bind) <- checkPatsTy ps muls tys
-      -- (c', umap) <- withVars [ (n,t) | (n,t,_) <- bind ] $ checkClauseTy c retTy
-
-      ((c', umap), ps', bind) <- checkPatsTyK ps muls tys $ do
-        when (any hasPRev ps) $ void $ ensureRevTy retTy
-        checkClauseTy c retTy
-
-      tryUnify (foldr (uncurry tyarr) retTy $ zip qs tys) expectedTy
+      ((c', umap), ps', bind) <- checkPatsTyK ps muls (map Check tys) $ do
+        when (any hasPRev ps) $ void $ ensureRevTy resTy
+        checkClauseTy c (Check resTy)
 
       let umap' = raiseUse omega umap
 
@@ -873,24 +1064,39 @@ inferMutual isTopLevel decls = do
       atLocMaybe (locPS ps) $ constrainVars xqs umap
       return ((ps', c'), foldr (M.delete . fst) umap' xqs)
 
-checkClauseTy :: Clause 'Renaming -> Ty -> TC (Clause 'TypeCheck, UseMap)
+-- checkTyPC loc qs (ps, c) expectedTy = atLoc loc $ do
+--   muls <- mapM ty2mult qs
+--   tys <- mapM (const newMetaTy) ps
+--   retTy <- newMetaTy
+
+--   -- (ps', bind) <- checkPatsTy ps muls tys
+--   -- (c', umap) <- withVars [ (n,t) | (n,t,_) <- bind ] $ checkClauseTy c retTy
+
+--   ((c', umap), ps', bind) <- checkPatsTyK ps muls tys $ do
+--     when (any hasPRev ps) $ void $ ensureRevTy retTy
+--     checkClauseTy c retTy
+
+--   tryUnify (foldr (uncurry tyarr) retTy $ zip qs tys) expectedTy
+
+--   let umap' = raiseUse omega umap
+
+--   let xqs = map (\(x, _, q) -> (x, q)) bind
+
+--   atLocMaybe (locPS ps) $ constrainVars xqs umap
+--   return ((ps', c'), foldr (M.delete . fst) umap' xqs)
+
+checkClauseTy :: Clause 'Renaming -> Expected BodyTy -> TC (Clause 'TypeCheck, UseMap)
 checkClauseTy (Clause e ws wi) expectedTy = do
   (ws', bind, umap) <- inferDecls False ws
   withVars bind $ do
     (e', umapE) <- checkTy e expectedTy
     (wi', umapWi) <- case wi of
       Just ewi -> do
-        ty <- atLoc (location e) $ ensureRevTy expectedTy
-        (ewi', umapWi) <- checkTyM ewi (ty *-> boolTy) omega
+        ty <- atLoc (location e) $ expectRevTy expectedTy
+        (ewi', umapWi) <- checkTyM ewi (Check (ty *-> boolTy)) omega
         return (Just ewi', umapWi)
       Nothing -> return (Nothing, M.empty)
     return (Clause e' ws' wi', umap `mergeUseMap` umapE `mergeUseMap` umapWi)
-
-skolemize :: PolyTy -> TC ([TyVar], QualTy)
-skolemize (TyForAll tvs ty) = do
-  sks <- localIcLevel (const $ (-1)) $ mapM newSkolemTyVar tvs
-  return (sks, substTyQ (zip tvs $ map TyVar sks) ty)
-skolemize ty = return ([], TyQual [] ty)
 
 -- tryCheckMoreGeneral :: MonadTypeCheck m => SrcSpan -> Ty -> Ty -> m ()
 -- tryCheckMoreGeneral loc ty1 ty2 = -- do

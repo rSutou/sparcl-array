@@ -34,6 +34,8 @@ import Language.Sparcl.SrcLoc
 import qualified Language.Sparcl.Surface.Syntax as S
 import Language.Sparcl.Typing.Type
 
+import Data.String (IsString (fromString))
+import GHC.Stack
 import System.Clock
 
 data AbortTyping = AbortTyping
@@ -62,6 +64,7 @@ data ErrorDetail
   | ImplicationCheckFail ![TyConstraint] ![TyConstraint]
   | Escape !MetaTyVar !Ty
   | GeneralizeFail !Ty !Ty ![TyVar]
+  | CannotHavePolyTy !PolyTy ![TyVar]
   | Other !D.Doc
 
 instance Pretty TypeError where
@@ -173,6 +176,12 @@ instance Pretty TypeError where
               , D.line <> D.text "is not polymorphic enough for:"
               , D.nest 2 (D.line D.<> D.dquotes (D.align $ ppr ty2))
               , D.line <> D.text "because variable(s)" <+> hsep (punctuate comma $ map ppr escapedMetaVars) <+> text "are monomorphic."
+              ]
+          go (CannotHavePolyTy polyTy escaped) =
+            D.hcat
+              [ D.text "the expression cannot have the given type"
+              , D.nest 2 (D.line <> D.dquotes (D.align $ ppr polyTy))
+              , D.line <> D.text "as skolemized variables(s)" <+> hsep (punctuate comma $ map ppr escaped) <+> text "escape."
               ]
           go (Other d) = d
 
@@ -406,6 +415,11 @@ setDebugLevel tc lv = tc{tcDebugLevel = lv}
 newtype TC a = TC (ReaderT TypingContext IO a)
   deriving (Functor, MonadReader TypingContext, Applicative, Monad, MonadIO, MonadThrow, MonadCatch)
 
+instance MonadFail TC where
+  fail s = do
+    liftIO $ putStrLn (prettyCallStack callStack)
+    cannotHappen (fromString s)
+
 runSimpleTC :: TypingContext -> TC a -> IO a
 runSimpleTC tc (TC m) = runReaderT m tc
 
@@ -596,6 +610,22 @@ newSkolemTyVar ty = do
   cnt <- liftIO $ atomicModifyIORef' cref $ \cnt -> (cnt + 1, cnt)
   return $ SkolemTv ty cnt ilv
 
+-- | Used to implement bidirectional type checking.
+-- @Check t@ means that a term's type is checked against @t@.
+-- @Infer alpha@ means that a term's type is inferred to be unified with @alpha@.
+data Expected t = Check t | Infer (TCRef Ty)
+
+newtype TCRef a = TCRef (IORef a)
+
+newTCRef :: a -> TC (TCRef a)
+newTCRef = fmap TCRef . liftIO . newIORef
+
+readTCRef :: TCRef a -> TC a
+readTCRef (TCRef ref) = liftIO (readIORef ref)
+
+writeTCRef :: TCRef a -> a -> TC ()
+writeTCRef (TCRef ref) v = liftIO $ writeIORef ref v
+
 defer :: SuspendedCheck -> TC ()
 defer sc = do
   ref <- asks tcDeferredIC
@@ -754,10 +784,26 @@ zonkErrorDetail (GeneralizeFail ty1 ty2 tyvs) =
   GeneralizeFail <$> zonkType ty1 <*> zonkType ty2 <*> pure tyvs
 zonkErrorDetail res = pure res
 
+skolemize :: PolyTy -> TC ([TyVar], QualTy)
+skolemize (TyForAll tvs ty) = do
+  sks1 <- localIcLevel (const (-1)) $ mapM newSkolemTyVar tvs
+  (sks2, TyQual cs2 ty2) <- skolemizeQ $ substTyQ (zip tvs $ map TyVar sks1) ty
+  return (sks1 ++ sks2, TyQual cs2 ty2)
+skolemize (FunTy m argTy resTy) = do
+  (sks, TyQual cs resTy') <- skolemize resTy
+  pure (sks, TyQual cs (FunTy m argTy resTy'))
+skolemize ty = return ([], TyQual [] ty)
+
+skolemizeQ :: QualTy -> TC ([TyVar], QualTy)
+skolemizeQ (TyQual cs ty) = do
+  (sks, TyQual cs' ty') <- skolemize ty
+  pure (sks, TyQual (cs ++ cs') ty')
+
 unify :: MonoTy -> MonoTy -> TC ()
 unify ty1 ty2 = do
   ty1' <- resolveSyn ty1
   ty2' <- resolveSyn ty2
+  -- Check: is it ok that ty1' and ty2' are not zonked?
   unifyWork ty1' ty2'
 
 unifyWork :: MonoTy -> MonoTy -> TC ()
@@ -776,6 +822,15 @@ unifyWork (TyMult m) (TyMult m') | m == m' = return ()
 unifyWork (TyVar x1) (TyVar x2) | x1 == x2 = return ()
 unifyWork (TyVar x) t = addConstraint [TyEq (TyVar x) t]
 unifyWork t (TyVar x) = addConstraint [TyEq t (TyVar x)]
+unifyWork pty1@(TyForAll tvs1 _) (TyForAll tvs2 qty2)
+  | length tvs1 == length tvs2 = do
+      (skVars, TyQual cs1 ty1) <- skolemize pty1
+      let TyQual cs2 ty2 = substTyQ (zip tvs2 $ map TyVar skVars) qty2
+
+      addImpConstraint cs1 (map ICNormal cs2)
+      addImpConstraint cs2 (map ICNormal cs1)
+
+      unifyWork ty1 ty2
 unifyWork ty1 ty2 = do
   ty1' <- zonkType ty1
   ty2' <- zonkType ty2
@@ -789,6 +844,7 @@ unifyMetaTyVar mv ty2 = do
     Nothing ->
       unifyUnboundMetaTyVar mv ty2
 
+-- Inspired from GHC's implementation.
 shouldBeSwapped :: MetaTyVar -> MetaTyVar -> TC Bool
 shouldBeSwapped mv1 mv2 = do
   lv1 <- readTcLevelMv mv1
