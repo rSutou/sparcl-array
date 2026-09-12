@@ -1,0 +1,78 @@
+-- Examples using higher-rank polymorphism.
+
+sig ex0 : (forall x. x -> x) -> (Int, Bool)
+def ex0 f = (f 42, f True)
+
+data List a = Nil | Cons a (List a) 
+
+sig append : List a -> List a -> List a 
+def append Nil ys = ys 
+         | (Cons x xs) ys = Cons x (append xs ys) 
+
+sig concatMap : (a -> List b) -> List a -> List b 
+def concatMap f Nil = Nil 
+            | f (Cons x xs) = append (f x) (concatMap f xs) 
+
+
+sig ex1 : (forall x. List x -> List x) 
+def ex1 = \x -> x 
+
+-- Currently, () -> forall x. x causes a parse error. 
+sig any : forall x. () -> x
+def any x = any x 
+
+def ex2 () = (any () : forall x. x -> x) : forall y. List y -> List y 
+def ex3 () = (any () : forall x. x -> x) : forall a b. (a, b) -> (a, b) 
+def ex4 () = (any () : forall a b. (a, b) -> (a, b)) : forall c. (c , c) -> (c, c) 
+
+-- Having signatures is crucial for them to have higher polymorphic type. 
+-- Otherwise, it would try to unify a polytype with a monotype, which is 
+-- not permitted in the current system. 
+sig ex5 : () -> (forall x. x -> x) -> Bool
+def ex5 () = (any () : (Int -> Int) -> Bool) 
+
+sig ex6 : () -> (forall x. x -> x) -> Bool 
+def ex6 () = (any () : (forall x. List x -> List x) -> Bool) 
+
+-- Nested datatype 
+data Tree a = Leaf a | Next (Tree (a , a))
+
+sig treeMap : (a -> b) -> Tree a -> Tree b 
+def treeMap f (Leaf a) = Leaf (f a) 
+          | f (Next t) = Next (treeMap (\(x,y) -> (f x , f y)) t)
+
+-- Codensity monad 
+data F a = F (forall r. (a -> List r) -> List r)
+
+def unF (F x) = x 
+
+sig pureF : a -> F a 
+def pureF x = F (\k -> k x) 
+
+sig bindF : F a -> (a -> F b) -> F b 
+def bindF (F m) f = F (\k -> m (\a -> unF (f a) k))
+
+data ListF where end 
+
+data App m a where 
+  sig AppList : List a -> App ListF a 
+end
+
+data Mon m = MkMon (forall a. a -> App m a) (forall a b. App m a -> (a -> App m b) -> App m b)
+
+sig listMon : Mon ListF 
+def listMon = 
+    MkMon (\x -> AppList (Cons x Nil))
+          (\(AppList x) f -> AppList (concatMap (\x' -> case f x' of AppList y -> y end) x))
+
+sig cartesian : Mon m -> App m a -> App m b -> App m (a , b) 
+def cartesian (MkMon pure bind) m1 m2 = 
+    bind m1 (\a -> 
+    bind m2 (\b -> 
+    pure (a, b)))
+
+sig cartesianList : List (Int, Int)
+def cartesianList = 
+    case cartesian listMon (AppList (Cons 1 (Cons 2 Nil))) (AppList (Cons 3 (Cons 4 (Cons 5 Nil)))) of 
+        AppList xs -> xs 
+    end 

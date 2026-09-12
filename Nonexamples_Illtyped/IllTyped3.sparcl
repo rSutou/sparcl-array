@@ -1,0 +1,8 @@
+data List a = Nil | Cons a (List a) 
+
+-- Currently, () -> forall x. x causes a parse error. 
+sig any : forall x. () -> x
+def any x = any x 
+
+sig ex7 : () -> (forall x. List x -> List x) -> Bool 
+def ex7 () = (any () : (forall x. x -> x) -> Bool) : (forall x. List x -> List x) -> Bool 

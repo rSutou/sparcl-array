@@ -9,7 +9,7 @@ import Control.Arrow ((***))
 import Control.Exception (evaluate)
 import Control.Monad (forM_)
 import Data.Functor (void)
-import Data.List (partition)
+import Data.List (partition, sort)
 import qualified Data.Map as M
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath ((</>))
@@ -68,12 +68,12 @@ mkName n = Original (ModuleName "Main") (User n) (Bare (User n))
 main :: IO ()
 main = hspec $ do
   files <- runIO $ recursivelyListDirectories "./Examples"
-  let nfiles = ["./TestCases/IllTyped1.sparcl"]
+  nfiles <- runIO $ recursivelyListDirectories "./Nonexamples_Illtyped"
   tc <- runIO initTypingContext
   describe "typechecker" $ do
-    forM_ files $ \fp -> it ("accepts file " ++ fp) $ do
+    forM_ (sort files) $ \fp -> it ("should accept file " ++ fp) $ do
       load tc fp `shouldReturn` ()
-    forM_ nfiles $ \fp -> it ("should not accept file " ++ fp) $ do
+    forM_ (sort nfiles) $ \fp -> it ("should not accept file " ++ fp) $ do
       load tc fp `shouldThrow` staticError
 
   describe "evaluator" $ do

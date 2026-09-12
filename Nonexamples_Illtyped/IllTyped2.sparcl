@@ -1,0 +1,14 @@
+data List a = Nil | Cons a (List a) 
+
+sig append : List a -> List a -> List a 
+def append Nil ys = ys 
+         | (Cons x xs) ys = Cons x (append xs ys) 
+
+sig concatMap : (a -> List b) -> List a -> List b 
+def concatMap f Nil = Nil 
+            | f (Cons x xs) = append (f x) (concatMap f xs) 
+
+sig concatMap' : (a -> List b) -> List a -> List b 
+def concatMap' f x = concatMap (\x' -> f x) x 
+
+
