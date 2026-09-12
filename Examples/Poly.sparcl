@@ -76,3 +76,60 @@ def cartesianList =
     case cartesian listMon (AppList (Cons 1 (Cons 2 Nil))) (AppList (Cons 3 (Cons 4 (Cons 5 Nil)))) of 
         AppList xs -> xs 
     end 
+
+-- 
+
+data Either a b = Left a | Right b 
+
+data WithE a b = MkWithE (forall r. Either (a -o r) (b -o r) #1 -> r)
+
+sig proj1E : WithE a b -o a 
+def proj1E (MkWithE m) = m (Left (\x -> x))
+
+sig proj2E : WithE a b -o b 
+def proj2E (MkWithE m) = m (Right (\x -> x)) 
+
+-- Y and WithG are taken from Kmett's talk slide
+data Y a b c where
+  sig L : Y a b a
+  sig R : Y a b b
+end 
+
+data WithG a b = MkWithG (forall c. Y a b c -> c)
+
+sig withG : (forall c. Y a b c -> c) #1 -> WithG a b
+def withG = MkWithG
+
+sig proj1G : WithG a b -o a 
+def proj1G (MkWithG m) = m L
+
+sig proj2G : WithG a b -o b 
+def proj2G (MkWithG m) = m R 
+
+sig system2either : &(a , b) -o WithE a b 
+def system2either m = MkWithE (\x -> case x of Left k -> k (&0_2 m) | Right k -> k (&1_2 m) end)
+
+sig either2gadt : WithE a b -o WithG a b 
+def either2gadt m = MkWithG (\x -> case x of L -> proj1E m | R -> proj2E m end)
+
+sig gadt2system : WithG a b -o &(a, b) 
+def gadt2system m = &(proj1G m , proj2G m) 
+
+sig withTestE : a -o WithE a a 
+def withTestE x = MkWithE (\z -> case z of Left k -> k x | Right k -> k x end)
+
+sig withTestG : a -o WithG a a 
+def withTestG x = MkWithG (\z -> case z of L -> x | R -> x end)
+
+sig withTestS : a -o &(a , a) 
+def withTestS x = &(x , x) 
+
+-- The current type system does not allow us to define a constructor as a function 
+-- because it does not allow multiplicity 0. Check the inferred types of the following functions. 
+
+def mkWithNonLinearE x y = MkWithE (\z -> case z of Left k -> k x | Right k -> k y end)
+def mkWithNonLinearS x y = &(x, y) 
+
+-- We need the type signature for this version (due to GADT pattern matching)
+sig mkWithNonLinearG : a -> b -> WithG a b 
+def mkWithNonLinearG x y = MkWithG (\z -> case z of L -> x | R -> y end)
