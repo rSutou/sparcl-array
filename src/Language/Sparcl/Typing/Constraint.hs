@@ -17,7 +17,7 @@ import Control.Monad (filterM, foldM, forM_, unless, when)
 import Data.List ((\\))
 import Language.Sparcl.Algorithm.SAT as SAT
 
--- | Check whether given => wanted holds, with a certain substitution to @ex@. 
+-- | Check whether given => wanted holds, with a certain substitution to @ex@.
 solveInferredConstraint :: Bool -> [MetaTyVar] -> [TyConstraint] -> [InferredConstraint] -> TC [TyConstraint]
 solveInferredConstraint raiseError ex given wanted =
   solveInferredConstraintWork raiseError ex [] given wanted
@@ -95,7 +95,7 @@ solveInferredConstraintWork raiseError existentials givenSubP given_ wanted_ = d
 
   let weq = [(t1, t2) | ICNormal (TyEq t1 t2) <- newWanted, t1 /= t2]
       wsub = [c | ICNormal c@(MSub _ _) <- newWanted]
-      wimp = [(cs, ics) | ICGuarded cs ics <- newWanted]
+      wimp = [(loc, whenC, ex, cs, ics) | ICGuarded loc whenC ex cs ics <- newWanted]
 
   -- unless (null weq) $
   --   reportError $ ImplicationCheckFail (map (uncurry TyEq) givenEq) (map (uncurry TyEq) weq)
@@ -114,14 +114,15 @@ solveInferredConstraintWork raiseError existentials givenSubP given_ wanted_ = d
   let qRem = eqRenaming ++ subsRemaining
 
   -- We first check implication constraints.
-  forM_ wimp $ \(cs', ics') -> do
+  forM_ wimp $ \(loc, whenC, ex, cs', ics') -> maybe id atLoc loc $ whenChecking whenC $ do
     curIcLevel <- currentIcLevel
-    let existentials' = filter (\x -> metaIcLevel x > curIcLevel) $ metaTyVars ics'
+    let leftover = filter (\x -> metaIcLevel x > curIcLevel) $ metaTyVars ics'
+    let existentials' = ex ++ leftover
     res <- pushIcLevel $ solveInferredConstraintWork True existentials' (givenSub' ++ givenSubP' ++ qRem) cs' ics'
 
     unless (null res) $ do
       let normcs = [c | ICNormal c <- ics']
-      reportError $ ImplicationCheckFail (cs' ++ givenSub' ++ givenSubP') normcs
+      reportError $ ImplicationCheckFail existentials' (cs' ++ givenSub' ++ givenSubP') normcs
       abortTyping
 
   return $ qRem
@@ -153,10 +154,12 @@ solveInferredConstraintWork raiseError existentials givenSubP given_ wanted_ = d
     -- return $ map (uncurry TyEq) eqc ++ subsRemaining
 
     substI m (ICNormal c) = ICNormal $ substTyC m c
-    substI m (ICGuarded cs ics) = ICGuarded (map (substTyC m) cs) (map (substI m) ics)
+    substI m (ICGuarded loc wc ex cs ics) = ICGuarded loc wc ex (map (substTyC m) cs) (map (substI m) ics)
 
     substMetaI m (ICNormal c) = ICNormal $ substTyMetaC m c
-    substMetaI m (ICGuarded cs ics) = ICGuarded (map (substTyMetaC m) cs) (map (substMetaI m) ics)
+    substMetaI m (ICGuarded loc wc ex cs ics) =
+      let ex' = ex \\ map fst m -- is it really true?
+      in  ICGuarded loc wc ex' (map (substTyMetaC m) cs) (map (substMetaI m) ics)
 
     makeVarSubsts :: [(Ty, Ty)] -> ([(TyVar, Ty)], [(MetaTyVar, Ty)])
     makeVarSubsts [] = ([], [])
@@ -204,7 +207,7 @@ checkImplication doesRaiseError given wanted = logBench "imp" $ do
         ]
   case SAT.sat prop of
     Just _ -> do
-      when doesRaiseError $ reportError $ ImplicationCheckFail given wanted
+      when doesRaiseError $ reportError $ ImplicationCheckFail [] given wanted
       return False
     Nothing -> return True
 

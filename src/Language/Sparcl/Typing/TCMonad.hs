@@ -34,6 +34,7 @@ import Language.Sparcl.SrcLoc
 import qualified Language.Sparcl.Surface.Syntax as S
 import Language.Sparcl.Typing.Type
 
+import Data.Maybe (isNothing)
 import Data.String (IsString (fromString))
 import GHC.Stack
 import System.Clock
@@ -61,7 +62,7 @@ data ErrorDetail
   | NoUse !Name
   | Undefined !Name
   | Untouchable !MetaTyVar !Ty
-  | ImplicationCheckFail ![TyConstraint] ![TyConstraint]
+  | ImplicationCheckFail ![MetaTyVar] ![TyConstraint] ![TyConstraint]
   | Escape !MetaTyVar !Ty
   | GeneralizeFail !Ty !Ty ![TyVar]
   | CannotHavePolyTy !PolyTy ![TyVar]
@@ -157,10 +158,11 @@ instance Pretty TypeError where
               [ D.text "Cannot unify" <+> ppr mv <+> text "with" <+> ppr ty
               , D.text "because variable" <+> ppr mv <+> text "is untouchable"
               ]
-          go (ImplicationCheckFail cs cs') =
+          go (ImplicationCheckFail ex cs cs') =
             D.vcat
               [ D.text "Cannot deduce" <+> ppr cs'
               , D.text "under" <+> ppr cs
+              , if null ex then mempty else D.text "with arbitrary choice of " <+> hsep (punctuate comma $ map ppr ex)
               ]
           go (Escape mv ty) =
             D.vcat
@@ -175,7 +177,7 @@ instance Pretty TypeError where
               , D.nest 2 (D.line D.<> D.dquotes (D.align $ ppr ty1))
               , D.line <> D.text "is not polymorphic enough for:"
               , D.nest 2 (D.line D.<> D.dquotes (D.align $ ppr ty2))
-              , D.line <> D.text "because variable(s)" <+> hsep (punctuate comma $ map ppr escapedMetaVars) <+> text "are monomorphic."
+              -- , D.line <> D.text "because variable(s)" <+> hsep (punctuate comma $ map ppr escapedMetaVars) <+> text "are monomorphic."
               ]
           go (CannotHavePolyTy polyTy escaped) =
             D.hcat
@@ -230,12 +232,13 @@ ty2mult = zonkType >=> go
   where
     go (TyMult t) = return $ MSingle (MulConst t)
     go (TyMetaV t) = return $ MSingle (MulVar t)
-    go _ = do
-      reportError $ Other $ text "Expected multiplicity"
+    go (TyVar t) = pure $ MSingle (MulVarRigid t)
+    go t = do
+      reportError $ Other $ text "Expected multiplicity, but received" <+> ppr t
       m <- newMetaTyVar
       return $ MSingle (MulVar m)
 
-data Mul = MulConst !Multiplicity | MulVar !MetaTyVar
+data Mul = MulConst !Multiplicity | MulVar !MetaTyVar | MulVarRigid !TyVar
 
 instance MultiplicityLike Mul where
   one = MulConst One
@@ -254,6 +257,7 @@ m2ty ms = case go ms [] of
         MulConst Omega -> Nothing
         MulConst One -> return r
         MulVar t -> return (TyMetaV t : r)
+        MulVarRigid t -> pure (TyVar t : r)
 
 singletonUseMap :: Name -> UseMap
 singletonUseMap n = M.singleton n one
@@ -283,17 +287,25 @@ deleteUseMap = M.delete
 data InferredConstraint
   = ICNormal !TyConstraint
   | ICGuarded
-      ![TyConstraint] -- Given
-      ![InferredConstraint] -- Wanted
+      !(Maybe SrcSpan)
+      -- ^ Source location under which this constraint is produced (for error message)
+      !WhenChecking
+      -- ^ Context under which this constraint is produced (for error message)
+      ![MetaTyVar]
+      -- ^ Existential type variables
+      ![TyConstraint]
+      -- ^ Given
+      ![InferredConstraint]
+      -- ^ Wanted
 
 instance MetaTyVars InferredConstraint where
   metaTyVarsGen f (ICNormal t) = metaTyVarsGen f t
-  metaTyVarsGen f (ICGuarded cs ics) = metaTyVarsGen f (cs, ics)
+  metaTyVarsGen f (ICGuarded _ _ ex cs ics) = metaTyVarsGen f (ex, cs, ics)
 
 instance Pretty InferredConstraint where
   ppr (ICNormal tc) = ppr tc
-  ppr (ICGuarded cs ics) =
-    angles (ppr cs <+> text "==>" <+> ppr ics)
+  ppr (ICGuarded _ _ ex cs ics) =
+    angles (align $ sep [text "Ex" <+> ppr ex, ppr cs, text "==>", ppr ics])
 
 type TypeErrorContext = ([S.LExp 'Renaming], WhenChecking)
 
@@ -533,10 +545,12 @@ addConstraint cs = do
   csRef <- asks tcConstraint
   liftIO $ modifyIORef csRef (map ICNormal cs ++)
 
-addImpConstraint :: [TyConstraint] -> [InferredConstraint] -> TC ()
-addImpConstraint cs ics = do
+addImpConstraint :: [MetaTyVar] -> [TyConstraint] -> [InferredConstraint] -> TC ()
+addImpConstraint ex cs ics = do
+  whenC <- asks tcChecking
+  srcLoc <- asks tcLoc
   csRef <- asks tcConstraint
-  liftIO $ modifyIORef csRef (ICGuarded cs ics :)
+  liftIO $ modifyIORef csRef (ICGuarded srcLoc whenC ex cs ics :)
 
 setConstraint :: [InferredConstraint] -> TC ()
 setConstraint cs = do
@@ -752,7 +766,7 @@ zonkTypeC (TyEq t1 t2) = TyEq <$> zonkType t1 <*> zonkType t2
 
 zonkTypeIC :: InferredConstraint -> TC InferredConstraint
 zonkTypeIC (ICNormal c) = ICNormal <$> zonkTypeC c
-zonkTypeIC (ICGuarded cs ics) = ICGuarded <$> mapM zonkTypeC cs <*> mapM zonkTypeIC ics
+zonkTypeIC (ICGuarded loc wc ex cs ics) = ICGuarded loc wc ex <$> mapM zonkTypeC cs <*> mapM zonkTypeIC ics
 
 zonkTypeError :: TypeError -> TC TypeError
 zonkTypeError (TypeError loc snippet es wc res) = do
@@ -776,8 +790,9 @@ zonkErrorDetail :: ErrorDetail -> TC ErrorDetail
 zonkErrorDetail (UnMatchTy t1 t2) = UnMatchTy <$> zonkType t1 <*> zonkType t2
 zonkErrorDetail (OccurrenceCheck tv ty) =
   OccurrenceCheck tv <$> zonkType ty
-zonkErrorDetail (ImplicationCheckFail cs cs') =
-  ImplicationCheckFail <$> mapM zonkTypeC cs <*> mapM zonkTypeC cs'
+zonkErrorDetail (ImplicationCheckFail ex cs cs') = do
+  ex' <- filterM (\mv -> do res <- readTyVar mv; pure $ isNothing res) ex
+  ImplicationCheckFail ex' <$> mapM zonkTypeC cs <*> mapM zonkTypeC cs'
 zonkErrorDetail (Untouchable m t) =
   Untouchable <$> pure m <*> zonkType t
 zonkErrorDetail (GeneralizeFail ty1 ty2 tyvs) =
@@ -827,8 +842,8 @@ unifyWork pty1@(TyForAll tvs1 _) (TyForAll tvs2 qty2)
       (skVars, TyQual cs1 ty1) <- skolemize pty1
       let TyQual cs2 ty2 = substTyQ (zip tvs2 $ map TyVar skVars) qty2
 
-      addImpConstraint cs1 (map ICNormal cs2)
-      addImpConstraint cs2 (map ICNormal cs1)
+      addImpConstraint [] cs1 (map ICNormal cs2)
+      addImpConstraint [] cs2 (map ICNormal cs1)
 
       unifyWork ty1 ty2
 unifyWork ty1 ty2 = do

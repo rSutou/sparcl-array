@@ -38,9 +38,7 @@ import Language.Sparcl.Pretty as D hiding ((<$>))
 
 -- import Data.Maybe (isNothing)
 
-import Control.Monad.Catch (throwM)
 import Data.List (foldl', nub, (\\))
-import Language.Sparcl.Exception (cannotHappen)
 
 -- import Control.Exception (evaluate)
 -- import           Debug.Trace
@@ -91,27 +89,37 @@ tryUnify t1 t2 = whenChecking (CheckingEquality t1 t2) $ unify t1 t2
 subsumptionCheckPoly :: Bool -> PolyTy -> PolyTy -> TC ()
 subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
   -- save the current constraints, as checking discharges constraints in ty1
-  origCS <- readConstraint
-  setConstraint []
-
   (skolTyVars, TyQual given ty2) <- skolemize polyTy2
-  subsumptionCheckBody isRightGiven ty1 ty2
-  cs <- readConstraint
 
-  -- Check if given => cs holds.
-  q <- solveInferredConstraint True [] given cs
+  (_, cs) <- gatherConstraint $ subsumptionCheckBody isRightGiven ty1 ty2
 
-  unless (null q) $ do
-    reportError $ ImplicationCheckFail given q
+  debugPrint 2 $ text "subsumptionCheckPoly: " <> ppr given <+> "==>" <+> ppr cs
 
-  let escaped = freeTyVars [ty1, polyTy2] \\ skolTyVars
+  currentTcLevel <- askCurrentTcLevel
+  invisibleMetaVars <-
+    filterM
+      ( \m -> do
+          lv <- readTcLevelMv m
+          return $ lv > currentTcLevel
+      )
+      (nub $ metaTyVars cs ++ metaTyVars ty1)
+
+  -- Constrain given => cs holds.
+  if null given
+    then do csOrig <- readConstraint; setConstraint (cs ++ csOrig)
+    else addImpConstraint invisibleMetaVars given cs
+
+  -- q <- solveInferredConstraint True [] given cs
+
+  -- unless (null q) $ do
+  --   debugPrint 2 $ text "implication failure at subsumptionCheckPoly"
+  --   reportError $ ImplicationCheckFail given q
+
+  let escaped = filter (`elem` freeTyVars [ty1, polyTy2]) skolTyVars
 
   unless (null escaped) $
     reportError $
       GeneralizeFail ty1 polyTy2 escaped
-
-  -- restore original constraints
-  setConstraint origCS
 
 -- See subsCheckRho in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
 subsumptionCheckBody :: Bool -> PolyTy -> BodyTy -> TC ()
@@ -223,7 +231,7 @@ checkPatsTyK ps ms ts comp = do
         then do
           -- GADT constructor is used so we need to increase IC-level to check the body.
           (a, ics) <- gatherConstraint $ pushIcLevel comp
-          addImpConstraint cs ics
+          addImpConstraint [] cs ics
           return a
         else do
           comp
@@ -253,36 +261,6 @@ checkGADTConstructorInRev :: SrcSpan -> Name -> TC ()
 checkGADTConstructorInRev loc c = do
   ConTy _ ys constr args _ <- askConType loc c
   unless (null ys && null constr && all (isMultiplicityOne . snd) args) $
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-    -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
-
     -- FIXME: is it too conservative? Can we allow constructors that comes with existential quantifications?
     reportError $
       Other $
@@ -453,7 +431,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       let ti = tys !! i
       let wTupleTy = TyCon (nameTyWTuple n) tys
 
-      instantiatePoly (FunTy wTupleTy (TyMult One) ti) expectedTy
+      instantiatePoly (FunTy (TyMult One) wTupleTy ti) expectedTy
       pure (WProj i n, emptyUseMap)
     go (Var x) = do
       tyOfX <- askType loc x
@@ -470,9 +448,7 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       let ts = map fst tqs
 
       ((e', umap), pats', bind) <- checkPatsTyK pats qs (map Check ts) $ do
-        when (any hasPRev pats) $ do
-          dummy <- newMetaTy
-          instantiatePoly (revTy dummy) expectedTy
+        when (any hasPRev pats) $ void $ ensureRevTy resTy
         checkTy e (Check resTy)
 
       let xqs = map (\(x, _, q) -> (x, q)) bind
@@ -644,12 +620,21 @@ checkPolyGen :: PolyTy -> (BodyTy -> TC (a, UseMap)) -> TC (a, UseMap)
 checkPolyGen ty k = do
   (skolemTyVars, TyQual given bodyTy) <- skolemize ty
 
-  ((res, umap), csExp) <- gatherConstraint $ k bodyTy
+  ((res, umap), csExp) <- gatherConstraint $ pushLevel $ k bodyTy
+
+  currentTcLevel <- askCurrentTcLevel
+  invisibleMetaVars <-
+    filterM
+      ( \m -> do
+          lv <- readTcLevelMv m
+          return $ lv > currentTcLevel
+      )
+      (nub $ metaTyVars csExp)
 
   -- FIXME: is the following really ok?
   if null given
     then do csOrig <- readConstraint; setConstraint (csExp ++ csOrig)
-    else addImpConstraint given csExp
+    else addImpConstraint invisibleMetaVars given csExp
 
   umapVars <- freeTyVars <$> mapM zonkType [t | m <- M.elems umap, t <- m2ty m]
   tyVars <- freeTyVars <$> zonkType ty
@@ -702,7 +687,7 @@ checkPolymorphicEnough loc ty1_ um polyTy2 = atLoc loc $ do
   q <- solveInferredConstraint True invisible given cs
 
   unless (null q) $ do
-    reportError $ ImplicationCheckFail given q
+    reportError $ ImplicationCheckFail invisible given q
 
 tryGeneralizeTy :: Bool -> MonoTy -> UseMap -> TC PolyTy
 tryGeneralizeTy isTopLevel ty_ u = do
@@ -910,7 +895,7 @@ inferMutual isTopLevel decls = do
       Just t -> pure t
       Nothing -> newMetaTy
 
-    fmap gatherU $ withVars (zip names tys) $ forM defs $ \(loc, n, pcs) -> do
+    fmap gatherU $ withVars (zip names tys) $ forM defs $ \(loc, n, pcs) -> atLoc loc $ do
       case M.lookup n sigMap of
         Nothing -> do
           bodyTy <- newMetaTy
@@ -924,13 +909,9 @@ inferMutual isTopLevel decls = do
           (args, resTy) <- ensureFunTyN (numPatterns pcs) bodyTy
           ((pcs', umap), cs) <- gatherConstraint $ gatherAltUC =<< mapM (checkTyPC loc args resTy) pcs
 
-          if null given
-            then do csCurr <- readConstraint; setConstraint (cs ++ csCurr)
-            else addImpConstraint given cs
+          pure ((n, loc, Right (skVars, polyTy, given, cs), pcs'), raiseUse omega umap)
 
-          pure ((n, loc, Right (skVars, polyTy), pcs'), raiseUse omega umap)
-
-  let skVarss = [(n, loc, sks, polyTy) | (n, loc, Right (sks, polyTy), _) <- nts0]
+  let skVarss = [(n, loc, sks, polyTy) | (n, loc, Right (sks, polyTy, _, _), _) <- nts0]
 
   nts1 <- forM nts0 $ \(n, loc, tt, pcs') -> case tt of
     Left (cs, bodyTy) -> do
@@ -942,7 +923,25 @@ inferMutual isTopLevel decls = do
 
       do csCurr <- readConstraint; setConstraint (csCurr ++ csOrig)
       pure (n, loc, polyTy, pcs')
-    Right (_, polyTy) -> pure (n, loc, polyTy, pcs')
+    Right (_, polyTy, given, cs) -> do
+      do
+        cs' <- mapM zonkTypeIC cs
+        debugPrint 3 $ text "inferMutual:" <+> align (vsep [text "Given: " <> ppr given, text "Wanted: " <> ppr cs'])
+
+      currentTcLevel <- askCurrentTcLevel
+      invisibleMetaVars <-
+        filterM
+          ( \m -> do
+              lv <- readTcLevelMv m
+              return $ lv > currentTcLevel
+          )
+          (nub $ metaTyVars cs)
+
+      if null given
+        then do csCurr <- readConstraint; setConstraint (cs ++ csCurr)
+        else addImpConstraint invisibleMetaVars given cs
+
+      pure (n, loc, polyTy, pcs')
 
   tyVars <- freeTyVars <$> mapM (\(_, _, ty, _) -> zonkType ty) nts1
 

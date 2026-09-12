@@ -52,6 +52,7 @@ runDesugar :: Desugar a -> TC a
 runDesugar m = runReaderT m 0
 
 numberOfArgs :: T.Ty -> Int
+numberOfArgs (T.TyForAll _ (T.TyQual _ t)) = numberOfArgs t
 numberOfArgs (T.TyCon n [_, _, t]) | n == nameTyArr = numberOfArgs t + 1
 numberOfArgs _ = 0
 
