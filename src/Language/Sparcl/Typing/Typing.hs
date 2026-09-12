@@ -85,7 +85,7 @@ msubMult m1 m2 = msub (m2ty m1) (m2ty m2)
 tryUnify :: Ty -> Ty -> TC ()
 tryUnify t1 t2 = whenChecking (CheckingEquality t1 t2) $ unify t1 t2
 
--- See subsCheckSigma in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
+-- See subsCheckSigma in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2007
 subsumptionCheckPoly :: Bool -> PolyTy -> PolyTy -> TC ()
 subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
   debugPrint 2 $ text "subsumptionCheckPoly: checking" <+> ppr ty1 <+> "is at least as polymorphic as" <+> ppr polyTy2
@@ -125,7 +125,7 @@ subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
     reportError $
       LessPolymorphic ty1 polyTy2 escaped
 
--- See subsCheckRho in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
+-- See subsCheckRho in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2007
 subsumptionCheckBody :: Bool -> PolyTy -> BodyTy -> TC ()
 subsumptionCheckBody isRightGiven ty1_ ty2_ = do
   ty1 <- zonkType ty1_
