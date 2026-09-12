@@ -50,6 +50,7 @@ data WhenChecking
   | CheckingConstraint ![TyConstraint]
   | CheckingMoreGeneral !Ty !Ty
   | CheckingMultiplicities Name MCContext ![Ty] ![Ty]
+  | CheckingType Name !Ty
   | OtherContext !Doc
   | CheckingNone
 
@@ -66,6 +67,8 @@ data ErrorDetail
   | Escape !MetaTyVar !Ty
   | GeneralizeFail !Ty !Ty ![TyVar]
   | CannotHavePolyTy !PolyTy ![TyVar]
+  | LessPolymorphic !PolyTy !PolyTy ![TyVar]
+  | CannotUnifyPolyTy !MetaTyVar !PolyTy
   | Other !D.Doc
 
 instance Pretty TypeError where
@@ -127,6 +130,8 @@ instance Pretty TypeError where
       pprWhenChecking (OtherContext d) =
         D.line
           <> item (D.text "when checking" <+> d)
+      pprWhenChecking (CheckingType n ty) =
+        D.line <> item (D.text "when checking if" <+> ppr n <+> text "has type" <+> ppr ty)
       pprWhenChecking CheckingNone = D.empty
 
       pprDetail = item . go
@@ -167,23 +172,37 @@ instance Pretty TypeError where
           go (Escape mv ty) =
             D.vcat
               [ text "Cannot unify:" <+> ppr mv <+> text "with" <+> ppr ty
-              , text "because skolemized variable(s)" <+> hsep (punctuate comma $ map ppr sks) <+> text "escape."
+              , text "because skolem variable(s)" <+> hsep (punctuate comma $ map ppr sks) <+> text "escape."
               ]
             where
               sks = [s | s@(SkolemTv _ _ _) <- S.freeTyVars ty]
-          go (GeneralizeFail ty1 ty2 escapedMetaVars) =
+          go (GeneralizeFail ty1 ty2 _escapedMetaVars) =
             D.hcat
               [ D.text "The inferred type"
-              , D.nest 2 (D.line D.<> D.dquotes (D.align $ ppr ty1))
+              , D.nest 2 (D.line D.<> D.align (ppr ty1))
               , D.line <> D.text "is not polymorphic enough for:"
-              , D.nest 2 (D.line D.<> D.dquotes (D.align $ ppr ty2))
+              , D.nest 2 (D.line D.<> D.align (ppr ty2))
               -- , D.line <> D.text "because variable(s)" <+> hsep (punctuate comma $ map ppr escapedMetaVars) <+> text "are monomorphic."
+              ]
+          go (LessPolymorphic ty1 ty2 escaped) =
+            D.hcat
+              [ D.text "Type"
+              , D.nest 2 (D.line D.<> D.align (ppr ty1))
+              , D.line <> D.text "is less polymorphic than"
+              , D.nest 2 (D.line D.<> D.align (ppr ty2))
+              , D.line <> D.text "because skolem variable(s)" <+> hsep (punctuate comma $ map ppr escaped) <+> text "escape."
               ]
           go (CannotHavePolyTy polyTy escaped) =
             D.hcat
               [ D.text "the expression cannot have the given type"
               , D.nest 2 (D.line <> D.dquotes (D.align $ ppr polyTy))
               , D.line <> D.text "as skolemized variables(s)" <+> hsep (punctuate comma $ map ppr escaped) <+> text "escape."
+              ]
+          go (CannotUnifyPolyTy mv polyTy) =
+            D.hcat
+              [ D.text "Cannot unify polytype"
+              , D.nest 2 (D.line <> D.align (ppr polyTy))
+              , D.line <> D.text "with an unification variable" <+> ppr mv
               ]
           go (Other d) = d
 
@@ -783,6 +802,8 @@ zonkWhenChecking (CheckingConstraint cs) =
   CheckingConstraint <$> traverse zonkTypeC cs
 zonkWhenChecking (CheckingMultiplicities x mc ts1 ts2) =
   CheckingMultiplicities x mc <$> mapM zonkType ts1 <*> mapM zonkType ts2
+zonkWhenChecking (CheckingType n ty) =
+  CheckingType n <$> zonkType ty
 zonkWhenChecking (OtherContext d) = return (OtherContext d)
 zonkWhenChecking CheckingNone = return CheckingNone
 
@@ -797,6 +818,20 @@ zonkErrorDetail (Untouchable m t) =
   Untouchable <$> pure m <*> zonkType t
 zonkErrorDetail (GeneralizeFail ty1 ty2 tyvs) =
   GeneralizeFail <$> zonkType ty1 <*> zonkType ty2 <*> pure tyvs
+zonkErrorDetail (LessPolymorphic ty1@(TyMetaV mv) ty2 escaped) = do
+  ty2' <- zonkType ty2
+  if containsForAll ty2'
+    then
+      pure $ CannotUnifyPolyTy mv ty2'
+    else
+      LessPolymorphic <$> zonkType ty1 <*> pure ty2' <*> pure escaped
+  where
+    containsForAll (TyForAll _ _) = True
+    containsForAll (TyCon _ ts) = any containsForAll ts
+    containsForAll (TySyn _ t) = containsForAll t
+    containsForAll _ = False
+zonkErrorDetail (LessPolymorphic ty1 ty2 escaped) =
+  LessPolymorphic <$> zonkType ty1 <*> zonkType ty2 <*> pure escaped
 zonkErrorDetail res = pure res
 
 skolemize :: PolyTy -> TC ([TyVar], QualTy)
@@ -835,8 +870,14 @@ unifyWork (TyCon c ts) (TyCon c' ts') | c == c' = do
   zipWithM_ unifyWork ts ts'
 unifyWork (TyMult m) (TyMult m') | m == m' = return ()
 unifyWork (TyVar x1) (TyVar x2) | x1 == x2 = return ()
-unifyWork (TyVar x) t = addConstraint [TyEq (TyVar x) t]
-unifyWork t (TyVar x) = addConstraint [TyEq t (TyVar x)]
+unifyWork (TyVar x) t = do
+  icLevel <- currentIcLevel
+  when (icLevel == 0) $ reportError $ UnMatchTy (TyVar x) t
+  addConstraint [TyEq (TyVar x) t]
+unifyWork t (TyVar x) = do
+  icLevel <- currentIcLevel
+  when (icLevel == 0) $ reportError $ UnMatchTy (TyVar x) t
+  addConstraint [TyEq t (TyVar x)]
 unifyWork pty1@(TyForAll tvs1 _) (TyForAll tvs2 qty2)
   | length tvs1 == length tvs2 = do
       (skVars, TyQual cs1 ty1) <- skolemize pty1

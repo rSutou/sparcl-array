@@ -88,6 +88,8 @@ tryUnify t1 t2 = whenChecking (CheckingEquality t1 t2) $ unify t1 t2
 -- See subsCheckSigma in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
 subsumptionCheckPoly :: Bool -> PolyTy -> PolyTy -> TC ()
 subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
+  debugPrint 2 $ text "subsumptionCheckPoly: checking" <+> ppr ty1 <+> "is at least as polymorphic as" <+> ppr polyTy2
+
   -- save the current constraints, as checking discharges constraints in ty1
   (skolTyVars, TyQual given ty2) <- skolemize polyTy2
 
@@ -115,11 +117,13 @@ subsumptionCheckPoly isRightGiven ty1 polyTy2 = do
   --   debugPrint 2 $ text "implication failure at subsumptionCheckPoly"
   --   reportError $ ImplicationCheckFail given q
 
-  let escaped = filter (`elem` freeTyVars [ty1, polyTy2]) skolTyVars
+  ftyVars <- freeTyVars <$> mapM zonkType [ty1, polyTy2]
+
+  let escaped = filter (`elem` ftyVars) skolTyVars
 
   unless (null escaped) $
     reportError $
-      GeneralizeFail ty1 polyTy2 escaped
+      LessPolymorphic ty1 polyTy2 escaped
 
 -- See subsCheckRho in S. Peyton Jones+: Practical type inference for arbitrary-rank types, JFP 2006
 subsumptionCheckBody :: Bool -> PolyTy -> BodyTy -> TC ()
@@ -158,6 +162,7 @@ instantiatePoly t (Infer ref) = do
   t' <- instantiate t -- discharge constraints
   writeTCRef ref t'
 instantiatePoly t (Check t') = do
+  debugPrint 3 $ text "Checking:" <+> ppr t <+> "is an instance of" <+> ppr t'
   subsumptionCheckBody True t t' -- discharge constraints of t
 
 instantiate :: PolyTy -> TC MonoTy
@@ -616,11 +621,11 @@ checkPolyTyM lexp ty m = do
   (lexp', umap) <- checkPolyTy lexp ty
   return (lexp', raiseUse m umap)
 
-checkPolyGen :: PolyTy -> (BodyTy -> TC (a, UseMap)) -> TC (a, UseMap)
-checkPolyGen ty k = do
+checkPolyTy :: LExp 'Renaming -> PolyTy -> TC (LExp 'TypeCheck, UseMap)
+checkPolyTy lexp ty = do
   (skolemTyVars, TyQual given bodyTy) <- skolemize ty
 
-  ((res, umap), csExp) <- gatherConstraint $ pushLevel $ k bodyTy
+  ((res, umap), csExp) <- gatherConstraint $ pushLevel $ checkTy lexp (Check bodyTy)
 
   currentTcLevel <- askCurrentTcLevel
   invisibleMetaVars <-
@@ -646,9 +651,6 @@ checkPolyGen ty k = do
       CannotHavePolyTy ty escaped
 
   pure (res, umap)
-
-checkPolyTy :: LExp 'Renaming -> PolyTy -> TC (LExp 'TypeCheck, UseMap)
-checkPolyTy lexp ty = checkPolyGen ty (checkTy lexp . Check)
 
 checkPolymorphicEnough :: SrcSpan -> MonoTy -> UseMap -> PolyTy -> TC ()
 checkPolymorphicEnough loc ty1_ um polyTy2 = atLoc loc $ do
@@ -913,7 +915,7 @@ inferMutual isTopLevel decls = do
 
   let skVarss = [(n, loc, sks, polyTy) | (n, loc, Right (sks, polyTy, _, _), _) <- nts0]
 
-  nts1 <- forM nts0 $ \(n, loc, tt, pcs') -> case tt of
+  nts1 <- forM nts0 $ \(n, loc, tt, pcs') -> atLoc loc $ case tt of
     Left (cs, bodyTy) -> do
       csOrig <- readConstraint
       setConstraint cs
@@ -937,9 +939,18 @@ inferMutual isTopLevel decls = do
           )
           (nub $ metaTyVars cs)
 
-      if null given
-        then do csCurr <- readConstraint; setConstraint (cs ++ csCurr)
-        else addImpConstraint invisibleMetaVars given cs
+      whenChecking (CheckingType n polyTy) $
+        if isTopLevel
+          then do
+            -- if this is called in the top level cs must be solved at this point
+            csRes <- solveInferredConstraint True invisibleMetaVars given cs
+            unless (null csRes) $
+              reportError $
+                ImplicationCheckFail invisibleMetaVars given csRes
+          else
+            if null given
+              then do csCurr <- readConstraint; setConstraint (cs ++ csCurr)
+              else addImpConstraint invisibleMetaVars given cs
 
       pure (n, loc, polyTy, pcs')
 
