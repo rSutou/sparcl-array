@@ -27,6 +27,7 @@ import Data.Maybe (fromMaybe)
 
 import Control.Arrow (left)
 import qualified Data.Char
+import Data.Text.Prettyprint.Doc (colon)
 
 full :: P m a -> P m a
 full p = sp *> p <* P.eof
@@ -496,8 +497,31 @@ funExpr =
           void $ keyword "in"
           e <- expr
           return $ Loc (startLoc <> location e) $ RDO as e)
+          
+      <|>
+      (do void $ keyword "mdo"
+          p <- sqparens opExpr
+          b <- sqparens opExpr
+          t <- sqparens qconName
+          as <- assignment `P.endBy` semicolon
+          void $ keyword "in"
+          e <- expr
+          return $ Loc (startLoc <> location e) $ MDO (pPu, p) (pBi, b) t as e)
+      <|>
+      (do void $ keyword "revmdo"
+          p <- sqparens opExpr
+          b <- sqparens opExpr
+          t <- sqparens qconName
+          as <- assignment `P.endBy` semicolon
+          void $ keyword "in"
+          e <- expr
+          return $ Loc (startLoc <> location e) $ RMDO (pPu, p) (pBi, b) t as e)
       <|>
       appExpr
+
+  where 
+    pPu = noLoc $ PVar $ Bare $ User "pure"
+    pBi = noLoc $ PVar $ Bare $ User "bind"
 
 appExpr :: (Monad m) => P m (LExp 'Parsing)
 appExpr =

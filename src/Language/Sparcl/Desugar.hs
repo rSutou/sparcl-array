@@ -24,12 +24,14 @@ import qualified Language.Sparcl.Core.Syntax as C
 import Language.Sparcl.Pass
 import Language.Sparcl.Typing.TCMonad
 import qualified Language.Sparcl.Typing.Type as T
+import qualified Language.Sparcl.Name as N
 
 import Language.Sparcl.Pretty hiding (list, (<$>))
 
 -- import Debug.Trace
 
 import Language.Sparcl.DebugPrint
+import Language.Sparcl.Typing.Type (revTy)
 
 type NameSource = Int -- de Brujin levels
 
@@ -135,6 +137,23 @@ desugarExp (Loc _ expr) = go expr
         let b = C.RCon c [C.Var x | x <- xs]
         return $ foldr C.Abs b xs
     go (S.RDO as er) = go (unLoc $ desugarRDO as er)
+    
+    go (S.MDO (pPu,ePu) (pBi,eBi) _ as er) = go (S.App (noLoc (S.Abs [pPu] (noLoc (S.App (noLoc (S.Abs [pBi] (goAs as er))) eBi)))) ePu)
+      where 
+        vBi =
+          let S.PVar nBi = unLoc pBi in 
+            S.Var nBi
+        goAs [] er = er
+        goAs ((p, e):as) er =
+          noLoc $ S.App (noLoc $ S.App (noLoc vBi) e) $ noLoc $ S.Abs [p] $ goAs as er
+    go (S.RMDO (pPu,ePu) (pBi,eBi) _ as er) = go (S.App (noLoc (S.Abs [pPu] (noLoc (S.App (noLoc (S.Abs [pBi] (goAs as er))) eBi)))) ePu)
+      where 
+        vBi =
+          let S.PVar nBi = unLoc pBi in 
+            S.Var nBi
+        goAs [] er = er
+        goAs ((p, e):as) er =
+          noLoc $ S.App (noLoc $ S.App (noLoc vBi) e) $ noLoc $ S.Abs [p] $ goAs as er
 
 desugarRDO :: [(S.LPat 'TypeCheck, Loc (S.Exp 'TypeCheck))] -> Loc (S.Exp 'TypeCheck) -> Loc (S.Exp 'TypeCheck)
 desugarRDO = go [] id

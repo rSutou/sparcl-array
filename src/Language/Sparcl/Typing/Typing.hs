@@ -109,6 +109,12 @@ ensureRevMTy ty = do
   argTy <- newMetaTy
   tryUnify (revMTy argTy) ty
   return argTy
+  
+ensureMonadTy :: MonoTy -> XTId 'Renaming -> TC MonoTy
+ensureMonadTy ty tcon = do
+  argTy <- newMetaTy
+  tryUnify (TyCon tcon [argTy]) ty
+  return argTy
 
 ensureFunTy :: MonoTy -> TC (MonoTy, MonoTy, MonoTy)
 ensureFunTy ty = do
@@ -541,6 +547,134 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
             ( (p', e') : as'
             , bindAs ++ bind
             , mergeUseMap (foldr (M.delete . fst) umapAs xqs) umapE
+            )
+            
+    go (MDO (pPu, ePu) (pBi, eBi) tcon as0 er) = do
+      -- tvPu <- newMetaTy
+      (ePu', tyPu, _) <- inferPolyTy True ePu
+      -- checkGeneralizeTy loc True tyPu emptyUseMap etyPu
+      -- checkGeneralizeTy loc True etyPu emptyUseMap tyPu
+      -- checkGeneralizeTy loc True tvPu emptyUseMap tyPu
+      -- tryUnify tyPu etyPu
+     
+      -- tvBi <- newMetaTy
+      (eBi', tyBi, _) <- inferPolyTy True eBi
+      -- checkGeneralizeTy loc True tyBi emptyUseMap etyBi
+      -- checkGeneralizeTy loc True tvBi emptyUseMap tyBi
+      -- tryUnify tyBi etyBi
+      
+      
+      -- withvarsでpureとbindを与える必要ある？
+      (as0', bind, umap) <- goAs as0
+      
+      let PVar nPu = unLoc pPu
+      let PVar nBi = unLoc pBi
+      
+      let bind' = map (\(x, t, _) -> (x, t)) bind
+      let bind'' = (nPu, tyPu): (nBi, tyBi) : bind'
+      let xs = map (\(x, _) -> x) bind''
+      -- let xqs = [(x, one) | x <- xs]
+      
+      argTy <- ensureMonadTy expectedTy tcon
+      (er', umapr) <- withVars bind' $ checkTy er expectedTy
+      -- constrainVars xqs umapr
+
+      return (MDO (noLoc (PVar (nPu,tyPu)),ePu') (noLoc (PVar (nBi, tyBi)), eBi') tcon as0' er', mergeUseMap umap (foldr M.delete umapr xs))
+      where
+        etyPu = 
+          let aname = BoundTv $ Local $ User "a" in
+          let avar = TyVar aname in
+          TyForAll [aname] $ TyQual [] $ 
+            avar *-> TyCon tcon [avar]
+        etyBi = 
+          let aname = BoundTv $ Local $ User "a" in
+          let avar = TyVar aname in
+          let bname = BoundTv $ Local $ User "b" in
+          let bvar = TyVar bname in
+          TyForAll [aname, bname] $ TyQual [] $ 
+            TyCon tcon [avar] *-> (avar *-> TyCon tcon [bvar]) *-> TyCon tcon [bvar]
+        goAs [] = return ([], [], M.empty)
+        goAs ((p, e) : as) = do
+          tyE <- newMetaTy
+          (e', umapE) <- checkTy e (TyCon tcon [tyE])
+
+          -- (p', bind)  <- checkPatTy p omega tyE
+
+          -- let xqs = map (\(x,_,q) -> (x,q)) bind
+
+          -- (as', bindAs, umapAs) <- withVars [ (n,t) | (n,t,_) <- bind ] $ goAs as
+
+          ((as', bindAs, umapAs), ~[p'], bind) <- checkPatsTyK [p] [omega] [tyE] $ do
+            goAs as
+          let xqs = map (\(x, _, q) -> (x, q)) bind
+
+          atLoc (location p) $ constrainVars xqs umapAs
+
+          return
+            ( (p', e') : as'
+            , bindAs ++ bind
+            , mergeUseMap umapAs umapE
+            )
+            
+    go (RMDO  (pPu, ePu) (pBi, eBi)  tcon as0 er) = do
+      (ePu', tyPu, _) <- inferPolyTy True ePu
+      checkGeneralizeTy loc True tyPu emptyUseMap etyPu
+      (eBi', tyBi, _) <- inferPolyTy True eBi
+      checkGeneralizeTy loc True tyBi emptyUseMap etyBi
+      
+      (as0', bind, umap) <- goAs as0
+      
+      let PVar nPu = unLoc pPu
+      let PVar nBi = unLoc pBi
+      
+      let bind' = map (\(x, t, _) -> (x, t)) bind
+      let xs = map (\(x, _) -> x) bind'
+      
+      let bind'' = (nPu, tyPu): (nBi, tyBi) : bind'
+      let xqs = [(x, one) | x <- xs]
+      
+      argTy <- ensureMonadTy expectedTy tcon
+
+      (er', umapr) <- withVars bind'' $ checkTy er expectedTy
+      constrainVars xqs umapr
+
+      return (RMDO (noLoc (PVar (nPu,etyPu)),ePu') (noLoc (PVar (nBi, etyBi)), eBi') tcon as0' er', mergeUseMap umap (foldr M.delete umapr xs))
+      where
+        etyPu = 
+          let aname = BoundTv $ Local $ User "a" in
+          let avar = TyVar aname in
+          TyForAll [aname]
+          $ TyQual []
+            $ revTy avar *-@ TyCon tcon [avar]
+        etyBi = 
+          let aname = BoundTv $ Local $ User "a" in
+          let avar = TyVar aname in
+          let bname = BoundTv $ Local $ User "b" in
+          let bvar = TyVar bname in
+          TyForAll [aname, bname]
+          $ TyQual []
+            $ TyCon tcon [avar] *-@ (revTy avar *-@ TyCon tcon [bvar]) *-@ TyCon tcon [bvar]
+        goAs [] = return ([], [], M.empty)
+        goAs ((p, e) : as) = do
+          tyE <- newMetaTy
+          (e', umapE) <- checkTy e (TyCon tcon [tyE])
+
+          -- (p', bind)  <- checkPatTy p omega tyE
+
+          -- let xqs = map (\(x,_,q) -> (x,q)) bind
+
+          -- (as', bindAs, umapAs) <- withVars [ (n,t) | (n,t,_) <- bind ] $ goAs as
+
+          ((as', bindAs, umapAs), ~[p'], bind) <- checkPatsTyK [p] [one] [revTy tyE] $ do
+            goAs as
+          let xqs = map (\(x, _, q) -> (x, q)) bind
+
+          atLoc (location p) $ constrainVars xqs umapAs
+
+          return
+            ( (p', e') : as'
+            , bindAs ++ bind
+            , mergeUseMap umapAs umapE
             )
 
 checkGeneralizeTy :: SrcSpan -> Bool -> MonoTy -> UseMap -> PolyTy -> TC ()

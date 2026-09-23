@@ -43,6 +43,9 @@ symForAll = symbol "forall" <|> symbol "∀"
 parens :: P m a -> P m a
 parens = P.between (symbol "(") (symbol ")")
 
+sqparens :: P m a -> P m a
+sqparens = P.between (symbol "[") (symbol "]")
+
 getSrcLoc :: P m SrcSpan
 getSrcLoc =
   fmap (\(P.SourcePos fp l c) -> SrcSpan (Just fp) (P.unPos l) (P.unPos c) (P.unPos l) (P.unPos c))

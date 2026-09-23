@@ -201,6 +201,23 @@ renameExp level localnames (Loc loc expr) = first (Loc loc) <$> go expr
     go (RDO as er) = do
       (as', er', fvs) <- goAs level localnames as er
       return (RDO as' er', fvs)
+      
+    go (MDO (pP, eP) (pB, eB) tcon as er) = do
+      tcon' <- resolveImportedName loc tcon
+      renamePat level localnames S.empty pP $ \pP' lv' lns' bvs' -> do
+        (eP', fvs1) <- renameExp lv' lns' eP
+        renamePat level localnames bvs' pB $ \pB' lv'' lns'' bvs'' -> do
+          (eB', fvs2) <- renameExp lv'' lns'' eB
+          (as', er', fvs3) <- goAsWithBoundVars bvs'' lv'' lns'' as er
+          return (MDO (pP', eP') (pB', eB') tcon' as' er', S.union fvs1 $ S.union fvs2 fvs3)
+    go (RMDO (pP, eP) (pB, eB) tcon as er) = do
+      tcon' <- resolveImportedName loc tcon
+      renamePat level localnames S.empty pP $ \pP' lv' lns' bvs' -> do
+        (eP', fvs1) <- renameExp lv' lns' eP
+        renamePat level localnames bvs' pB $ \pB' lv'' lns'' bvs'' -> do
+          (eB', fvs2) <- renameExp lv'' lns'' eB
+          (as', er', fvs3) <- goAsWithBoundVars bvs'' lv'' lns'' as er
+          return (RMDO (pP', eP') (pB', eB') tcon' as' er', S.union fvs1 $ S.union fvs2 fvs3)
 
     goAs :: DBLevel -> LocalNames -> [(LPat 'Parsing, LExp 'Parsing)] -> LExp 'Parsing
             -> Renaming ([(LPat 'Renaming, LExp 'Renaming)] , LExp 'Renaming, FreeVars)
@@ -210,6 +227,17 @@ renameExp level localnames (Loc loc expr) = first (Loc loc) <$> go expr
     goAs lv lns ((p,e):as) er = do
       (e', fvs1) <- renameExp lv lns e
       renamePat lv lns S.empty p $ \p' lv' lns' bvs' -> do
+        (as', er', fvs2) <- goAs lv' lns' as er
+        return ((p',e'):as', er', S.union fvs1 (fvs2 `S.difference` bvs'))
+        
+    goAsWithBoundVars :: BoundVars ->  DBLevel -> LocalNames -> [(LPat 'Parsing, LExp 'Parsing)] -> LExp 'Parsing
+            -> Renaming ([(LPat 'Renaming, LExp 'Renaming)] , LExp 'Renaming, FreeVars)
+    goAsWithBoundVars _ lv lns [] er = do
+      (er', fvs) <- renameExp lv lns er
+      return ([], er', fvs)
+    goAsWithBoundVars bvs lv lns ((p,e):as) er = do
+      (e', fvs1) <- renameExp lv lns e
+      renamePat lv lns bvs p $ \p' lv' lns' bvs' -> do
         (as', er', fvs2) <- goAs lv' lns' as er
         return ((p',e'):as', er', S.union fvs1 (fvs2 `S.difference` bvs'))
 

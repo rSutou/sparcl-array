@@ -1,0 +1,12 @@
+sig sample : M Int
+def sample =
+
+    mdo [pureM][bindM][M]
+        a <- pure 1;
+        b <- pure 2;
+        a <- pure 3;
+    in
+    pure a
+    
+    
+    --  mdo [pureM][bindM][M] a <- pure 1; b <- pure 2; a <- pure 3; in pure a

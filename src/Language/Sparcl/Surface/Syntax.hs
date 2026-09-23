@@ -211,6 +211,9 @@ data Exp p
   | RPin
 
   | CaseM !(LExp p) ![ (LPat p, Clause p) ]
+  
+  | MDO !(LPat p, LExp p) !(LPat p, LExp p) !(XTId p) ![(LPat p, LExp p)] !(LExp p)
+  | RMDO !(LPat p, LExp p) !(LPat p, LExp p) !(XTId p) ![(LPat p, LExp p)] !(LExp p)
 
 instance (AllPretty p) => Pretty (LExp p) where
   pprPrec k = pprPrec k . unLoc
@@ -279,6 +282,29 @@ instance (AllPretty p) => Pretty (Exp p) where
               <> text "before" <+> ppr r
           )
   pprPrec _ RPin = text "pin"
+  
+  pprPrec k (MDO (_,p) (_,b) t as r) =
+    parensIf (k > 0) $
+      D.text "mdo"
+        <+> text "[" <+> ppr p <+> text "]"
+        <+> text "[" <+> ppr b <+> text "]"
+        <+> text "[" <+> ppr t <+> text "]"
+        <+> D.align
+          ( D.vcat (map (\(x, e) -> ppr x <+> text "<-" <+> ppr e) as)
+              <> D.line
+              <> text "before" <+> ppr r
+          )
+  pprPrec k (RMDO (_,p) (_,b) t as r) =
+    parensIf (k > 0) $
+      D.text "revmdo"
+        <+> text "[" <+> ppr p <+> text "]"
+        <+> text "[" <+> ppr b <+> text "]"
+        <+> text "[" <+> ppr t <+> text "]"
+        <+> D.align
+          ( D.vcat (map (\(x, e) -> ppr x <+> text "<-" <+> ppr e) as)
+              <> D.line
+              <> text "before" <+> ppr r
+          )
 
 -- pprPrec k (RPin e1 e2) = parensIf (k > 9) $
 --   D.text "pin" D.<+> pprPrec 10 e1 D.<+> pprPrec 10 e2
