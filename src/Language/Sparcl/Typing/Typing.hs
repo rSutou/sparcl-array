@@ -563,20 +563,23 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
       -- checkGeneralizeTy loc True tvBi emptyUseMap tyBi
       -- tryUnify tyBi etyBi
       
-      
-      -- withvarsでpureとbindを与える必要ある？
-      (as0', bind, umap) <- goAs as0
-      
       let PVar nPu = unLoc pPu
       let PVar nBi = unLoc pBi
       
+      let bind = [(nPu, tyPu), (nBi, tyBi)]
+      
+      -- withvarsでpureとbindを与える必要ある？
+      (as0', bind, umap) <- withVars bind $ goAs as0 tyBi
+      
+      
       let bind' = map (\(x, t, _) -> (x, t)) bind
       let bind'' = (nPu, tyPu): (nBi, tyBi) : bind'
+      
       let xs = map (\(x, _) -> x) bind''
       -- let xqs = [(x, one) | x <- xs]
       
       argTy <- ensureMonadTy expectedTy tcon
-      (er', umapr) <- withVars bind' $ checkTy er expectedTy
+      (er', umapr) <- withVars bind'' $ checkTy er expectedTy
       -- constrainVars xqs umapr
 
       return (MDO (noLoc (PVar (nPu,tyPu)),ePu') (noLoc (PVar (nBi, tyBi)), eBi') tcon as0' er', mergeUseMap umap (foldr M.delete umapr xs))
@@ -586,15 +589,15 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
           let avar = TyVar aname in
           TyForAll [aname] $ TyQual [] $ 
             avar *-> TyCon tcon [avar]
-        etyBi = 
-          let aname = BoundTv $ Local $ User "a" in
-          let avar = TyVar aname in
-          let bname = BoundTv $ Local $ User "b" in
-          let bvar = TyVar bname in
-          TyForAll [aname, bname] $ TyQual [] $ 
-            TyCon tcon [avar] *-> (avar *-> TyCon tcon [bvar]) *-> TyCon tcon [bvar]
-        goAs [] = return ([], [], M.empty)
-        goAs ((p, e) : as) = do
+        etyBi tyA = 
+          -- let aname = BoundTv $ Local $ User "a" in
+          -- let avar = TyVar aname in
+          -- let bname = BoundTv $ Local $ User "b" in
+          -- let bvar = TyVar bname in
+          -- TyForAll [aname, bname] $ TyQual [] $ 
+            TyCon tcon [tyA] *-> (tyA *-> expectedTy) *-> expectedTy
+        goAs [] _ = return ([], [], M.empty)
+        goAs ((p, e) : as) tyBi= do
           tyE <- newMetaTy
           (e', umapE) <- checkTy e (TyCon tcon [tyE])
 
@@ -605,8 +608,12 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
           -- (as', bindAs, umapAs) <- withVars [ (n,t) | (n,t,_) <- bind ] $ goAs as
 
           ((as', bindAs, umapAs), ~[p'], bind) <- checkPatsTyK [p] [omega] [tyE] $ do
-            goAs as
+            goAs as tyBi
           let xqs = map (\(x, _, q) -> (x, q)) bind
+          
+          
+          -- let bindVars = map (\(x, t, _) -> (x, t)) bind
+          -- withVars bindVars $ checkPolyTy loc (etyBi tyE) umapAs $ tyBi
 
           atLoc (location p) $ constrainVars xqs umapAs
 
@@ -618,27 +625,31 @@ checkTy lexp@(Loc loc expr) expectedTy = fmap (first $ Loc loc) $ atLoc loc $ at
             
     go (RMDO  (pPu, ePu) (pBi, eBi)  tcon as0 er) = do
       (ePu', tyPu, _) <- inferPolyTy True ePu
-      checkGeneralizeTy loc True tyPu emptyUseMap etyPu
+      -- checkGeneralizeTy loc True tyPu emptyUseMap etyPu
       (eBi', tyBi, _) <- inferPolyTy True eBi
-      checkGeneralizeTy loc True tyBi emptyUseMap etyBi
-      
-      (as0', bind, umap) <- goAs as0
+      -- checkGeneralizeTy loc True tyBi emptyUseMap etyBi
       
       let PVar nPu = unLoc pPu
       let PVar nBi = unLoc pBi
       
+      let bind = [(nPu, tyPu),(nBi, tyBi)]
+      (as0', bind, umap) <- withVars bind $ goAs as0
+      
       let bind' = map (\(x, t, _) -> (x, t)) bind
       let xs = map (\(x, _) -> x) bind'
       
-      let bind'' = (nPu, tyPu): (nBi, tyBi) : bind'
       let xqs = [(x, one) | x <- xs]
+      
+      let bind'' = (nPu, tyPu): (nBi, tyBi) : bind'
       
       argTy <- ensureMonadTy expectedTy tcon
 
       (er', umapr) <- withVars bind'' $ checkTy er expectedTy
-      constrainVars xqs umapr
+      
+      let umap' = mergeUseMap umap umapr
+      constrainVars xqs umap'
 
-      return (RMDO (noLoc (PVar (nPu,etyPu)),ePu') (noLoc (PVar (nBi, etyBi)), eBi') tcon as0' er', mergeUseMap umap (foldr M.delete umapr xs))
+      return (RMDO (noLoc (PVar (nPu, tyPu)),ePu') (noLoc (PVar (nBi, tyBi)), eBi') tcon as0' er', foldr M.delete umap' xs)
       where
         etyPu = 
           let aname = BoundTv $ Local $ User "a" in

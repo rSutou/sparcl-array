@@ -206,7 +206,7 @@ renameExp level localnames (Loc loc expr) = first (Loc loc) <$> go expr
       tcon' <- resolveImportedName loc tcon
       renamePat level localnames S.empty pP $ \pP' lv' lns' bvs' -> do
         (eP', fvs1) <- renameExp lv' lns' eP
-        renamePat level localnames bvs' pB $ \pB' lv'' lns'' bvs'' -> do
+        renamePat lv' lns' bvs' pB $ \pB' lv'' lns'' bvs'' -> do
           (eB', fvs2) <- renameExp lv'' lns'' eB
           (as', er', fvs3) <- goAsWithBoundVars bvs'' lv'' lns'' as er
           return (MDO (pP', eP') (pB', eB') tcon' as' er', S.union fvs1 $ S.union fvs2 fvs3)
@@ -214,7 +214,7 @@ renameExp level localnames (Loc loc expr) = first (Loc loc) <$> go expr
       tcon' <- resolveImportedName loc tcon
       renamePat level localnames S.empty pP $ \pP' lv' lns' bvs' -> do
         (eP', fvs1) <- renameExp lv' lns' eP
-        renamePat level localnames bvs' pB $ \pB' lv'' lns'' bvs'' -> do
+        renamePat lv' lns' bvs' pB $ \pB' lv'' lns'' bvs'' -> do
           (eB', fvs2) <- renameExp lv'' lns'' eB
           (as', er', fvs3) <- goAsWithBoundVars bvs'' lv'' lns'' as er
           return (RMDO (pP', eP') (pB', eB') tcon' as' er', S.union fvs1 $ S.union fvs2 fvs3)
