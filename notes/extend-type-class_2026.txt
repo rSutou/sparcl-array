@@ -1,0 +1,195 @@
+NOTE: This note was written by Claude Code (claude.ai/code), based on
+discussions with the author and changes made on the `type-class` branch.
+The original memo items by the author are merged (reworded) into the
+sections below.
+
+
+Extending Sparcl with type classes (on top of rank-2 type checking)
+===================================================================
+
+Design
+======
+
+Instances are passed as implicit instance arguments (as in Agda / Lean),
+not as Haskell-style class constraints (`Eq a => ...`).
+
+- A class is an ordinary type constructor (the type of its dictionary),
+  so `Eq a` is just the type `TCon Eq [a]`.
+- An instance argument is written with double braces: `{{Eq a}} -> t`.
+- The arrow of an instance argument is always unrestricted (Omega).
+  `{{C}} -o t` or `{{C}} # p -> t` is not allowed.
+- Instance arguments cannot be named inside types (no `{{eq : Eq a}}`).
+  A name can be given in a definition by the pattern `{{eq}}`.
+- Omitted instance arguments are inserted based on types (as in Agda / Lean).
+  Explicitly given instance arguments are marked syntactically (`f {{e}}`).
+  Type-directed guessing alone is ambiguous, e.g.
+
+    sig f : {{Eq a}} -> Eq a -> a -> Bool
+    def g = f eqNat     -- f {{eqNat}} : Eq Nat -> Nat -> Bool
+                        -- or f {{search}} eqNat : Nat -> Bool ?
+
+  and an argument whose type is still a meta variable (`def h d = f d`)
+  cannot be classified at that point.
+
+
+Concrete syntax
+===============
+
+Class declaration
+-----------------
+
+```
+class C a1 ... an [extends S1, ..., Sm] [where ... end]
+```
+
+- The body may contain method signatures (`sig`) and default method
+  definitions (`def`).
+- Superclasses are fields of the class (as Lean's `extends`), so an
+  `{{Ord a}}` argument also provides `Eq a`.
+
+```
+class Eq a where
+    sig (==) : a -> a -> Bool
+    sig (/=) : a -> a -> Bool
+    def (/=) x y = not (x == y)      -- default method
+end
+
+class Ord a extends Eq a where
+    sig compare : a -> a -> Ordering
+end
+```
+
+Instance declaration
+--------------------
+
+```
+instance [x :] ty [where ... end]
+```
+
+- The instance name `x` is optional. Unnamed instances are expected to get
+  generated names (e.g. `instEqInt`).
+- `ty` is parsed by `typeExpr`; free type variables are quantified by
+  `introForAll` (same as `sig`). Instances that need other instances take
+  them as instance arguments.
+
+```
+instance Eq Int where
+    def (==) = eqInt
+end
+
+instance eqNat : Eq Nat where ... end
+
+instance eqList : {{Eq a}} -> Eq (List a) where ... end
+-- parsed type: forall a. {{Eq a}} -> Eq (List a)
+
+instance {{Eq a}} -> {{Eq b}} -> Eq (Pair a b) where ... end
+```
+
+Instance arguments in types, expressions and patterns
+-----------------------------------------------------
+
+```
+sig elem : {{Eq a}} -> a -> List a -> Bool       -- type
+def t = elem {{eqNat}} Z Nil                     -- explicit passing
+def t' = sort {{ordList {{ordNat}}}} xs          -- nested
+def notElem {{eq}} x xs = not (elem {{eq}} x xs) -- binding by pattern
+```
+
+Examples are in `Examples-Class/` (moved out of `Examples/` so that
+`cabal test` does not try to type-check them). All of them parse except
+`Functor.sparcl`, since the type parser does not accept applications of
+type variables (`f a`).
+
+
+Representation (Surface.Syntax)
+===============================
+
+- `TConstraint`: removed the `TyClass` constructor (classes are no longer
+  constraints). Also removed the unused `TyCl` type.
+- `Ty`: no new constructor. `{{C}} -> t` is `TCon nameTyInstArr [C, t]`
+  (binary, no multiplicity). `isTyInstArr` checks the name, like `isTyArr`.
+- `Exp`: `InstArg e` marks an explicitly passed instance; `f {{e}}` is
+  `App f (InstArg e)`. (Rejected alternative: a separate `AppInst` node.)
+- `Pat`: `PInst p` for `{{p}}`.
+- `TopDecl`:
+    DClass !(XTId p) ![XTId p] ![LTy p] !(Decls p (LDecl p))
+      -- class name, type parameters, superclasses, body
+    DInst !(Maybe (XId p)) !(LTy p) !(Decls p (LDecl p))
+      -- instance name, instance type, body
+  Class names and parameters use `XTId` (type-level names, which stay
+  `Name` after type checking), while the instance name uses `XId`
+  (a value, which carries its type after type checking).
+
+
+Other changes
+=============
+
+- Name.hs: added `NInstArrow` (pretty-printed as `{{->}}`) and
+  `nameTyInstArr`.
+- Parser/Id.hs: added `class`, `instance` and `extends` to `keyWords`.
+  Without `class`/`instance` as keywords, `data Nat = Z | S Nat` followed
+  by `instance ...` parsed `instance` as a type variable argument of `S`.
+- Parser/Helper.hs: added `instBraces` for `{{ ... }}`.
+- Parser/Exp.hs:
+    - `arrTy` is rewritten as a right-recursive parser and accepts
+      `{{C}} -> t` anywhere in an arrow chain (e.g. `Int -> {{Eq a}} -> a`).
+      Only `->` may follow `{{C}}`.
+    - `simpleExpr` accepts `{{e}}` (`InstArg`); `simplePat` accepts `{{p}}`
+      (`PInst`). Syntactically `{{e}}` may appear anywhere a simple
+      expression can; misplaced ones are to be rejected later.
+    - removed `classConstraint` and the stray `import GHC.RTS.Flags`.
+- Surface.Syntax: pretty printing for the new constructs; the
+  `where ... end` body of class/instance declarations is printed by
+  `pprClassBody`.
+
+Pretty-printing fixes (pre-existing issues)
+-------------------------------------------
+
+- Nullary type constructors were printed with parentheses and a trailing
+  space (`Eq (Int )`): `pprPrec` for `TCon c []` now prints just `c`.
+- Constructor arguments in `data` declarations lacked parentheses
+  (`Cons a List a`): `NormalC` arguments are printed with `pprPrec 2`
+  (the precedence of type-application arguments).
+- Operator names lacked parentheses (`sig == : ...`, `def == ...`):
+  added `isOpName` to the `QueryName` class (for each pass) and
+  `pprVarName`, used for `sig`, `def` and `Var`. The operator characters
+  in `isOpNameBase` must be kept consistent with `opRaw` in Parser/Id.hs.
+  `fixity == 40` is printed without parentheses, as before.
+- Type synonyms lacked `=` (`type Symbol  Char`): `DType` now prints
+  `type T a1 ... an = ty`.
+- Char literals were printed as `"'c'"` (Literal.hs): `ppr (show c)`
+  showed the string `'c'` once more via `Pretty [Char]`; now `ppr c`.
+- Removed extra spaces in `data T ` (no parameters) and `def x  = e`
+  (no patterns).
+
+
+TODO / known issues
+===================
+
+- Renaming, type checking and desugaring do not handle classes, instances,
+  `InstArg` or `PInst` yet (incomplete-pattern warnings in Renaming.hs and
+  Desugar.hs).
+- `Typing/Type.hs` (internal types) does not pretty-print `nameTyInstArr`.
+- Type-variable application (`f a`) is not supported by the type parser,
+  which constructor classes such as `Functor` need.
+- Pretty printing: the invertible type constructor is printed with its
+  qualified name (`Base.rev Int` instead of `rev Int`). Only in the surface
+  printer; `Typing/Type.hs` special-cases `nameTyRev`. (Fix on hold.)
+- Pretty printing of tuple types and tuple expressions (decided to keep as is):
+  the surface printer prints the parsed structure as it is, i.e. a tuple is
+  printed in the same way as an ordinary constructor application:
+    (Int, Bool)  ~>  <Tup 2> Int Bool       &(b, Int)  ~>  <&Tup 2> b Int
+    (e1, e2)     ~>  <Tup 2> e1 e2          rev (a, b) ~>  rev <Tup 2> a b
+    ()           ~>  <Tup 0>
+  This is because the parser represents tuples as applications of the tuple
+  constructor (`mkTupleTy`, `mkTupleExp` in Parser/Exp.hs).
+  A possible change (implemented once, then reverted): detect the tuple
+  constructor in the printer and print `(t1, ..., tn)` / `&(...)` for types
+  (checking `XTId p` by `Typeable`, like `isTyArr`), and decompose `App`
+  chains headed by `Con`/`RCon` of the tuple constructor for expressions.
+  Note that tuple patterns (`PCon`) are already printed as `(p1, ..., pn)`
+  (pre-existing), and `Typing/Type.hs` prints internal tuple types as
+  `(t1, ..., tn)`.
+- test/Spec.hs: `recursivelyListDirectories` calls `doesDirectoryExist` on
+  the bare entry name instead of `dir </> entry`, so subdirectories of
+  `Examples/` are not recursed into (left as is).

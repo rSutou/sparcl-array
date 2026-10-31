@@ -1,0 +1,58 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Overview
+
+Haskell implementation of **Sparcl**, a language for partially-invertible computation with linear (multiplicity-annotated) types (Matsuda & Wang, ICFP 2020). The deliverable is an interpreter/REPL; there is no compiler backend. Sparcl source files use the `.sparcl` extension.
+
+## Commands
+
+Toolchain: GHC 9.6.7 + cabal (installed via ghcup). The `stack-*.yaml` files are for older GHCs and are not the primary build.
+
+```sh
+cabal build                         # build library + executable
+cabal run                           # start REPL (prompt: "Sparcl>")
+cabal run sparcl-exe -- FILE.sparcl # start REPL and :load FILE
+cabal run sparcl-exe -- -v2 FILE    # verbosity 0-3 (debug output of typing/desugaring)
+cabal test                          # hspec suite (test/Spec.hs)
+cabal test --test-options='--match "Fib.sparcl"'   # run a subset of tests by name
+cabal bench                         # typing benchmark (bench/Bench.hs)
+cabal repl lib:sparcl               # GHCi on the library, e.g. to call parseModule directly
+```
+
+REPL commands: `:load FILE`, `:reload`, `:type EXP`, `:verbosity [0-3]`, `:help`, `:quit`. There is no batch mode; passing a file just runs `:load`.
+
+Formatting: `fourmolu.yaml` (2-space indent, leading commas/arrows) is the formatter config. Compiled with `-Wall`; many modules already have warnings, so don't treat existing ones as regressions.
+
+## Tests
+
+`test/Spec.hs` is data-driven rather than per-module:
+- Every file under `./Examples` must load (parse → rename → typecheck → desugar) without a static error. `recursivelyListDirectories` is meant to recurse, but it calls `doesDirectoryExist` on the bare entry name instead of `dir </> entry`. So subdirectories are not recursed into: any subdirectory placed in `Examples/` is itself "loaded" as a file and fails with `openFile: inappropriate type`. Keep `Examples/` flat; work-in-progress examples that should not be tested live outside it (e.g. `Examples-Class/`).
+- Every file under `./Nonexamples_Illtyped` must raise a `StaticException`.
+- `./TestCases/RuntimeError*.sparcl` must raise a `RunTimeException`.
+- A few examples (`Fib`, `ArithmeticCoding`, `LZ77`, `AddLSB`) are evaluated and specific top-level bindings compared (e.g. `n0` vs `n0'`).
+
+So adding a `.sparcl` file directly in `Examples/` automatically adds a test that expects it to typecheck. Tests run from the repo root (paths are relative).
+
+## Architecture
+
+Pipeline, driven by `Language.Sparcl.Module` (`readModule` / `interpDecls`):
+
+1. **Parse** — `Surface/Parser/{Exp,Id,Helper}.hs` (megaparsec) → `Surface.Syntax` AST at pass `'Parsing`. The grammar is *not* indentation sensitive; blocks are closed with `end` (`case ... end`, `where ... end`). Keywords are listed in `Surface/Parser/Id.hs` (`keyWords`) — a new keyword must be added there, or it will be parsed as an identifier.
+2. **Rename** — `Renaming.hs` resolves names/operators/fixities → pass `'Renaming`.
+3. **Type check** — `Typing/Typing.hs` (bidirectional, `Expected = Check | Infer`) in the `TC` monad (`Typing/TCMonad.hs`), producing pass `'TypeCheck`. Multiplicity constraints (`MSub`, `TyEq` in `Typing/Type.hs`) are gathered and checked with the small SAT solver in `Algorithm/SAT.hs`; `Typing/Constraint.hs` simplifies them. Supports higher-rank polymorphism via signatures (see `Examples/Poly.sparcl`).
+4. **Desugar** — `Desugar.hs` turns the typed surface AST into `Core.Syntax` (pattern elaboration, `revdo`, etc.).
+5. **Evaluate** — `Eval.hs` / `Value.hs`. Values are HOAS-style (`Value -> Eval Value`); invertible computations are residuals with forward/backward functions. Forward evaluation ignores linearity.
+
+The surface AST is indexed by `Pass` (`Pass.hs`) and uses type families (`XId p`, `XTId p`, …) so one datatype serves all three stages.
+
+Built-in primitives (arithmetic, `eqInt`/`leInt`/…, `Un`, `Many`) are defined in `baseModuleInfo` in `Module.hs` (type table, value table, constructor table, operator fixities together). `runtime/` is a separate, currently unused package (`sparcl-runtime`, commented out in `cabal.project`).
+
+`notes/Syntax.md` documents pattern elaboration and syntax design discussions.
+
+## Ongoing work: type classes (branch `type-class`)
+
+- Parser and surface AST support `class ... extends ... where ... end` / `instance [x :] ... where ... end` (`DClass`, `DInst` in `Surface.Syntax`; `classDecl`, `instanceDecl` in `Parser/Exp.hs`) and the `{{ }}` forms in types, expressions and patterns. Renaming, typing and desugaring do **not** handle them yet, so `Examples-Class/*.sparcl` can only be checked at the parser level (e.g. `parseModule` in `cabal repl lib:sparcl`).
+- Design direction has changed: instances are to be passed as **implicit instance arguments (Agda/Lean style)**, not as Haskell-style constraints (`Eq a => ...`). They are written with Agda-style double braces: `sig elem : {{Eq a}} -> a -> List a -> Bool`. Instance names are optional (`instance eqNat : Eq Nat where ... end`), instances with arguments are written `instance eqList : {{Eq a}} -> Eq (List a) where ... end`, and superclasses are fields declared with `class Ord a extends Eq a where ... end` (so `{{Ord a}}` also provides `Eq a`). Instance-argument arrows are always unrestricted (Omega). Instances can be passed explicitly (`elem {{eqNat}} x xs`) and bound by name in definitions (`def f {{eq}} x = ...`), but not named inside types. In the surface AST, `{{C}} -> t` is `TCon nameTyInstArr [C, t]` (no dedicated constructor; see `isTyInstArr`), explicit passing is `App e (InstArg e')`, and binding is the pattern `PInst`. Type-level names (class names, class parameters) use `XTId`, not `XId`: after type checking `XId` carries a type, `XTId` does not. `Examples-Class/` uses this syntax and parses (except `Functor.sparcl`, since type-variable application `f a` is not supported by the type parser).
+- Design notes: `notes/extend-type-class_2026.txt`.
