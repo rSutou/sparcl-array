@@ -163,12 +163,259 @@ Pretty-printing fixes (pre-existing issues)
   (no patterns).
 
 
+Renaming (Renaming.hs)
+======================
+
+Decided and implemented item by item.
+
+Expressions: `InstArg`
+----------------------
+
+- `{{e}}` is allowed only as an argument of an application:
+  `App e1 (InstArg e2)` renames `e1` and `e2` as usual (free variables are
+  those of `e1` and `e2`). An `InstArg` anywhere else is rejected:
+    An instance argument {{...}} can only appear as an argument of a
+    function application.
+- Reason: `{{ }}` is not a value but a mark on how an argument is passed
+  (it fills the next instance-argument binder of the applied function), so
+  a standalone `{{e}}` has nothing to fill. The contents `e` themselves are
+  an ordinary value (`def d = eqNat` is fine). Agda has the same rule:
+  instance/hidden arguments are expressions in its concrete syntax but are
+  rejected by the scope checker when not an argument of an application.
+- Checking it in renaming lets later passes assume that `InstArg` occurs
+  only as the argument of `App`.
+- A parenthesized `({{e}})` is also rejected, since `Parens` sits between
+  `App` and `InstArg` (e.g. `(\x -> x) ({{1}})`).
+
+Patterns: `PInst`
+-----------------
+
+- `{{p}}` is renamed like a constructor argument; the bound variable is an
+  ordinary local variable. `hasRev (PInst p) = hasRev p`.
+- Restrictions (checked before renaming the patterns by `checkInstPatArg` /
+  `checkNoInstPat`):
+    (i)   The contents must be a variable or `_` (`{{x}}`, `{{_}}`).
+          A class type has no constructors to match, and an instance
+          argument is unrestricted, so `{{C x}}` and `{{rev x}}` make no
+          sense.
+    (ii)  `{{p}}` may appear only as an argument pattern itself of `def` or
+          `\` (at any argument position, e.g. `def g n {{eq}} x = ...`).
+          It is rejected in `case` alternatives, `let p <- e in ...`,
+          `revdo` bindings, and inside other patterns (`C {{x}}`).
+          Reason: `{{p}}`, dual to `{{e}}`, marks that the argument
+          corresponds to an instance-argument arrow of the function type;
+          other patterns match a single value and have no such arrow.
+          Whether the position matches the type is checked by the type
+          checker.
+    (iii) All clauses of a `def` must have `{{ }}` at the same argument
+          positions (in addition to having the same number of arguments).
+          Clauses that omit instance patterns altogether are fine.
+- Patterns have no parentheses node, so `({{x}})` is the same as `{{x}}`.
+- Possible future relaxations (relaxing later keeps old programs valid):
+    - constructors with instance arguments (GADT-style
+      `sig C : {{Eq a}} -> a -> T`) would give meaning to `C {{x}} y`,
+      as in Agda;
+    - if a variable bound by `{{x}}` becomes an instance candidate in its
+      scope (as in Agda), `let {{x}} <- e in ...` / `case e of {{x}} -> ...`
+      could introduce local instances.
+
+Class declarations: `DClass`
+----------------------------
+
+- (a) Method names are top-level names (as in Haskell): `(==)` declared in
+  `class Eq a` becomes a top-level function of type
+  `{{Eq a}} -> a -> a -> Bool`, referred to without qualification (as all
+  samples do). Two classes, or a class and a top-level `def`, cannot have
+  a method of the same name. (Rejected: Lean-style `Eq.(==)` with `open`,
+  which needs qualified names inside a module and a new construct.)
+- (b) Class parameters in method signatures (parser change, implemented).
+  In existing Sparcl every `sig` is closed: the parser quantifies all free
+  type variables of each `sig` by `introForAll`, and renaming renames a
+  `sig` type in an empty type-variable environment (`renameTy 0 M.empty`),
+  so a type variable of an outer `sig` cannot be referred to from a `sig`
+  in its `where` clause (no scoped type variables; e.g. `sig g : a -> a`
+  inside `def f` with `sig f : a -> a` gets its own `forall a`).
+  Method signatures are the exception: their class parameters must refer
+  to the class. Hence `classDecl` parses its body with
+  `whereClauseWith (introForAllExcept xs)`, which does not quantify the
+  class parameters `xs`:
+    class C a where
+      sig m : a -> b -> b         -- parsed as  forall b. a -> b -> b
+      sig k : forall a. a -> a    -- explicit forall: shadows the class `a`
+    end
+  Renaming will rename method signatures with the class parameters in the
+  environment, and the type checker will build the method type
+  `forall a. {{C a}} -> <sig type>`. Whether a method type that does not
+  mention a class parameter (as `k`) is allowed is left to type checking.
+  (Rejected: stripping the outer `forall`s of the class parameters
+  afterwards, which cannot tell them from explicitly written ones.)
+  Added to Parser/Exp.hs: `introForAllExcept`, `localDeclWith`,
+  `sigDeclWith`, `whereClauseWith` (the old names are the `introForAll`
+  instances).
+- (c) Checks on the class body:
+    - `sig`: declares a method; duplicated method names in a class are
+      rejected.
+    - `def`: a default method; allowed only for a method declared by `sig`
+      in the same class, at most one `def` per method (more clauses are
+      written with `|`). Its name is resolved to the top-level method name
+      and the right-hand side is renamed as usual. Its type comes from the
+      method's `sig`.
+    - `fixity`: allowed only inside the class body and only for methods of
+      that class; it goes to the top-level operator table. A top-level
+      `fixity` for a method is rejected, as before (top-level `fixity` is
+      allowed only for names defined by top-level `def`).
+      (Rejected: also allowing a top-level `fixity` for methods, as in
+      Haskell.)
+- (d) Superclasses `extends S1, ..., Sm`:
+    - Each `Si` is renamed in the environment of the class parameters (as
+      method signatures), so type variables other than the class
+      parameters are rejected (`class Ord a extends Eq b` gives
+      `Unbound type variable: b`); they are not quantified anywhere.
+    - Renaming checks only the shape `TCon S ts`. Whether `S` is a class
+      is checked by the type checker (it needs imported class
+      information), as for instance types.
+    - Left to later passes: names of superclass fields (such as Lean's
+      `toEq`) are generated when dictionaries are built (type checking or
+      desugaring), since users never write them and extracting `Eq a` from
+      `{{Ord a}}` is done by instance search; cycles in the superclass
+      hierarchy are detected by the type checker, where the information
+      of all classes, including imported ones, is available.
+
+Instance declarations: `DInst`
+------------------------------
+
+- Named instances (`instance eqNat : Eq Nat ...`) are top-level value
+  names, in the same name space as `def` (so `elem {{eqNat}}` works).
+- (a) Unnamed instances get a name generated by renaming that users cannot
+  write: a new `SystemName` constructor (e.g. `NInstance !Int`) numbered
+  within the module, `Original currentModule (System (NInstance k)) ...`.
+  Renaming always fills `DInst (Just x)`, so later passes can treat every
+  instance as a named value; no clash with user names is possible.
+  Pretty-printing is by the number at first (e.g. `<instance #3>`);
+  printing the instance type would need the type in the name.
+  (Rejected: Lean-style names from the type head such as `instEqList`,
+  which may clash with user names or with each other; keeping `Nothing`
+  until type checking, which makes every later pass handle `Maybe`.)
+- (b) The instance type (already quantified by `introForAll` in the
+  parser) is renamed by `renameTy 0 M.empty` and checked in renaming:
+    1. Shape: `forall a1 ... ak. {{T1}} -> ... -> {{Tm}} -> C t1 ... tn`
+       with each `Ti` of the form `TCon S ts`. Ordinary arrows
+       (`Int -> Eq a`; instance search cannot supply explicit arguments),
+       `forall` in the middle, and a head that is a type variable or an
+       arrow are rejected. Whether `C` and `S` are classes is checked by
+       the type checker.
+    2. No restriction on the head arguments `t1 ... tn` (Haskell 98 would
+       require `C (T a1 ... an)`; Agda and Lean have no such restriction).
+       To be decided together with instance search (overlap, termination).
+    3. Every type variable must occur in the head `C t1 ... tn`;
+       e.g. `instance {{Eq b}} -> Eq Int` is rejected, since search for
+       `Eq Int` cannot determine `b`.
+    4. A named instance must not have the same name as a top-level `def`
+       or a method. NB: there is no duplicate check among top-level names
+       at all at present (`FIXME: check there is no overlaps in names.`
+       in `renameTopDecls`).
+- (c) The instance body:
+    1. Only `def` is allowed. `sig` is rejected (the type is determined by
+       the class `sig` and the instance type; cf. Haskell without
+       `InstanceSigs`), and so is `fixity` (method fixities are written
+       only in the class body).
+    2. A `def` name is resolved to a top-level name by the usual name
+       resolution. Whether it is a method of the instance's class is
+       checked by the type checker (the name table does not distinguish
+       methods from other names, and has no information on imported
+       classes). Two `def`s of the same name in one body are rejected.
+    3. Right-hand sides are renamed as usual; e.g. `l1 = l2` in the body
+       of `Eq (List a)` refers to the global method, and the dictionary is
+       chosen by instance search in the type checker.
+    4. Missing methods without defaults are reported by the type checker.
+  The instance arguments of the instance itself (`{{Eq a}}` of `eqList`)
+  are found by instance search in the body but cannot be named, as in
+  Haskell; a syntax for naming them is left for later.
+
+Output of `renameTopDecls`
+--------------------------
+
+- (i) Classes and instances are returned as dedicated tuples, in the same
+  way as `data` and `type` declarations (planned shapes):
+    [Loc (Name, [Name], [LTy 'Renaming], [Loc (Name, LTy 'Renaming)], [LDecl 'Renaming])]
+      -- class: name, parameters, superclasses, method signatures,
+      --        default method definitions (DDef)
+    [Loc (Name, LTy 'Renaming, [LDecl 'Renaming])]
+      -- instance: name (generated if omitted), type, method definitions
+  Method fixities go to the returned operator table.
+  (Rejected: returning the `DClass` / `DInst` nodes themselves. That would
+  reuse the AST and its pretty printer, but the type checker would have to
+  rule out the other `TopDecl` constructors.)
+  NB: only the `def`/`sig` part of the result is printed (`-v2`,
+  `Module.hs`); the `data`/`type` tuples have no `Pretty` instance and are
+  not printed, so neither will these be.
+- (ii) Default methods and instance bodies are not mixed into the
+  stratification (SCCs) of top-level `def`s; each body is a list of `DDef`s.
+  The type checker is to (1) register all classes and instance types,
+  (2) infer the top-level `def`s stratum by stratum, and (3) check default
+  methods and instance bodies last. Their types are fully given by the
+  declarations (like `def`s with `sig`s), so (2) never depends on (3), and
+  (3) can use the inferred types of helper functions without `sig`.
+  At run time this is fine: `desugarTopDecls` puts all top-level bindings in
+  one `Bind`, which `evalUBind` evaluates as one recursive group (`rec`).
+- (iii) `inferTopDecls` takes the class and instance lists as two more
+  arguments and, until type checking of them is implemented, fails with
+  "Type checking of class and instance declarations is not supported yet."
+  if either is non-empty.
+
+Implementation (Renaming.hs, all of the above)
+----------------------------------------------
+
+- `renameTopDecls` returns `[Loc ClassDeclR]` and `[Loc InstDeclR]`
+  (type synonyms for the tuples above) in addition to the previous results.
+- Top-level names now include class names, method names and instance
+  names (including generated ones), so they are put in the name table and
+  in the returned bound names.
+- Duplicate check: each method and named instance is checked against the
+  top-level `def`s, the methods and the named instances ("Duplicate
+  definition of x"). Duplicates among other names are still not checked.
+- Class fixities are collected before renaming anything (checking that
+  they are for methods of the class) and are in effect for the whole
+  module; they are also added to the returned operator table.
+- Class and instance bodies are renamed after the top-level `def`s, under
+  the top-level and class fixities. The clauses of a definition are renamed
+  by `renameDefClauses`, factored out of `renameLocalDeclsWork` and shared
+  by local, top-level, default method and instance method definitions.
+- The instance type check is `checkInstTy`; superclasses and instance
+  arguments of instances are checked by `isClassAppTy` (a `TCon` that is
+  not an arrow).
+- Name.hs: added `NInstance !Int` to `SystemName`, printed `<instance #k>`.
+  Instances are numbered by their positions among the instance declarations
+  of the module (named ones included).
+- Error messages (checked with small files):
+    Duplicate definition of m            -- method vs def, duplicated sig,
+                                         -- duplicated instance name
+    Default method k is not a method of class C
+    Duplicate default method m in class C
+    Fixity declaration in class C is allowed only for its methods: ++
+    Fixity declaration is allowed only for the current level name: ++
+                                         -- top-level fixity of a method
+    Unbound type variable: b             -- class C a extends D b
+    A superclass must be of the form C t1 ... tn: a
+    The head of an instance must be of the form C t1 ... tn: Int -> C Int
+    Type variable b does not occur in the instance head C Int
+    An instance argument of an instance must be of the form C t1 ... tn: ...
+    A signature declaration is not allowed in an instance declaration.
+    A fixity declaration is not allowed in an instance declaration.
+    Duplicate definition of method m in an instance declaration.
+    Unbound name: zz                     -- instance method not defined anywhere
+- All `Examples-Class/*.sparcl` (except `Functor.sparcl`, a parse error)
+  pass renaming and stop at the type checker with the message above. The
+  samples' method fixities were moved into the class bodies (`Eq.sparcl`,
+  `Ord.sparcl`).
+
+
 TODO / known issues
 ===================
 
-- Renaming, type checking and desugaring do not handle classes, instances,
-  `InstArg` or `PInst` yet (incomplete-pattern warnings in Renaming.hs and
-  Desugar.hs).
+- Type checking and desugaring do not handle any of the new constructs
+  (`inferTopDecls` rejects classes and instances; incomplete-pattern
+  warnings in Desugar.hs). Renaming handles all of them.
 - `Typing/Type.hs` (internal types) does not pretty-print `nameTyInstArr`.
 - Type-variable application (`f a`) is not supported by the type parser,
   which constructor classes such as `Functor` need.
