@@ -110,6 +110,34 @@ Representation (Surface.Syntax)
   (binary, no multiplicity). `isTyInstArr` checks the name, like `isTyArr`.
 - `Exp`: `InstArg e` marks an explicitly passed instance; `f {{e}}` is
   `App f (InstArg e)`. (Rejected alternative: a separate `AppInst` node.)
+  REVISED 2026-11-04 (during the type-checking review, H-1; plan (c), not
+  implemented yet): the constraint "`{{e}}` appears only as an argument
+  of an application", now enforced by renaming (`Renaming.hs:130-138`),
+  is expressed by the data type:
+    data Arg p = ExplicitArg !(LExp p) | InstArg !(LExp p)
+    | App !(LExp p) !(Arg p)        -- `InstArg` is no longer an `Exp`
+  Why (c) rather than (b) `AppInst !(LExp p) !(LExp p)` or (a) as now:
+  a spine is `(LExp p, [Arg p])` with the same `Arg` (D-1's
+  `Explicit e` / `Inst e` are its constructors; flattening just collects
+  the arguments of `App`s), inserted applications are
+  `App f (InstArg (InstHole ref))` like user-written ones, rebuilding is
+  `foldl App`, and renaming, desugaring (dictionaries are ordinary
+  arguments at run time) and printing each have one `App` case with a
+  helper for `Arg` (`argExp`, `mapArg`, `pprArg`); (b) splits every one
+  of them in two. Cost is small: surface `App` occurs at about 10 places
+  (Syntax definition / printing, `lapp` in the parser, two renaming
+  cases, `go (App ..)` in typing, desugaring of `App`, of `Let1` and of
+  `revdo`), none in tests or benchmarks.
+  Changes when implemented: the parser reads the head by `simpleExpr` and
+  arguments by `InstArg <$> instBraces expr <|> ExplicitArg <$>
+  simpleExpr`, folding with `App` (`instArgExpr` leaves `simpleExpr`), so
+  `{{e}}` elsewhere is a parse error (a dedicated message may be added);
+  `Arg` has no `Loc` of its own (the braces' position is lost, minor);
+  renaming has one `App` case (the `InstArg` error goes away);
+  desugaring of `Let1` / `revdo` builds `App f (ExplicitArg e)`; D-1
+  (spine arguments are `Arg`), D-3 (`Op` rebuilt with `ExplicitArg`), F-1
+  / F-3 (shape of inserted applications) and H-1 (no `InstArg` case in
+  `checkTy`) follow; CLAUDE.md is updated.
 - `Pat`: `PInst p` for `{{p}}`.
 - `TopDecl`:
     DClass !(XTId p) ![XTId p] ![LTy p] !(Decls p (LDecl p))
@@ -245,7 +273,8 @@ Class declarations: `DClass`
     end
   Renaming will rename method signatures with the class parameters in the
   environment, and the type checker will build the method type
-  `forall a. {{C a}} -> <sig type>`. Whether a method type that does not
+  `forall a b. {{C a}} -> a -> b -> b` for `m` (all foralls in front; see
+  type checking B-5). Whether a method type that does not
   mention a class parameter (as `k`) is allowed is left to type checking.
   (Rejected: stripping the outer `forall`s of the class parameters
   afterwards, which cannot tell them from explicitly written ones.)
@@ -280,6 +309,8 @@ Class declarations: `DClass`
       `{{Ord a}}` is done by instance search; cycles in the superclass
       hierarchy are detected by the type checker, where the information
       of all classes, including imported ones, is available.
+      (Changed in type checking G-2, 2026-11-04: cycles are not detected
+      but allowed; instance search stops by its depth limit, E-3 3.)
 
 Instance declarations: `DInst`
 ------------------------------
@@ -410,8 +441,1710 @@ Implementation (Renaming.hs, all of the above)
   `Ord.sparcl`).
 
 
+Type checking (Typing/*.hs)
+===========================
+
+Overall direction (by the author):
+- Abstraction insertion: when checking an expression against a type that
+  takes an instance argument, and the expression is not an abstraction
+  taking an instance argument (`\{{d}} -> ...`), an abstraction is inserted.
+- Application insertion: when checking an application whose head has a
+  type taking an instance argument and the corresponding argument is not an
+  instance argument `{{e}}`, an application to a new meta variable (an
+  instance goal) is inserted.
+- As in Lean and Agda, a chain of applications is first flattened into a
+  head and a list of arguments (a spine) and then checked.
+
+Decided item by item.
+
+PROGRESS (2026-11-05): where the item-by-item review stands
+  - Decided: A-1, A-2, A-3, A-4, "Scope and staging (kinds)" (plan alpha),
+    B-1 (class table), "Positions of class types" (Q1 allowed, Q2
+    rejected; B-1 and "Scope and staging" revised accordingly).
+  - Decided: B-2 (instance table; instance names in the value environment),
+    B-3 (local-instance scope; settles I3), B-4 (modules; amends B-2),
+    B-5 (method types: all foralls in front; settles I2),
+    C-1 (abstraction insertion at the entry of checkTy),
+    C-2 (alignment of patterns and arrows; trailing ones left to C-1),
+    C-3 (PInst patterns), C-4 (b) (instance patterns need annotations),
+    D-1 (spine application), D-2 (a) (trailing instance arguments always
+    inserted) [revised to (M1) + (F1), see below], D-3 (`Op` as a spine; output as `App`s), D-4 (`Con` /
+    `RCon` unchanged; Q2 also for field types), D-5 (a) (no insertion for
+    meta types; order dependence documented), D-6 (flattening crosses
+    `Parens` around the head), E-1 (postponed goals), E-2 (solve per
+    group; local: postpone outward; top level: no generalization of goals),
+    E-3 (candidates: locals, their superclasses, globals; depth limit),
+    E-4 (one-way matching; locals first; fixed order among locals;
+    overlap checked at declaration and at use [revised 2026-11-04: at
+    use only, see below]; no head restriction; also
+    the local-over-global point noted at D-2 and I4's second half),
+    E-5 (error constructors), F-1 (typed AST of inserted forms).
+  - Reconsidered 2026-11-04: C-1 kept as plan (P) (insertion at the entry,
+    as Agda; comparison with the synthesized type rejected; see C-1).
+  - Decided 2026-11-04: F-3 (b) (`InstHole` with an IORef; amends E-1 4
+    and F-1 3), G-1 (order in `inferTopDecls`), G-2 (classes; cycles
+    allowed, E-3 3 / E-5 amended; I4 first half settled by (b)).
+  - Revised 2026-11-04 (while presenting G-3): E-4 (4) plan (A), as Agda:
+    no overlap check at declaration; several unifying globals are stuck
+    (goal with metas) or `AmbiguousInstances`; the commit rule of E-4 (1)
+    changed accordingly; `OverlappingInstances` removed from E-5.
+  - Decided 2026-11-04: G-3 (instances; no overlap check at declaration),
+    G-4 (`checkClassTypes`; where it runs), G-5 (method bodies via
+    `checkSigDef` without binding the name; recursive dictionaries
+    allowed). G is complete.
+  - Decided 2026-11-04 (raised at H-1): surface AST revision for
+    expressions, plan (c) `App !(LExp p) !(Arg p)` with
+    `data Arg p = ExplicitArg | InstArg` (see "Representation"); D-1, D-3,
+    F-1, F-3, H-1 follow it.
+  - ON HOLD (user, 2026-11-04): the same for patterns. Proposal presented:
+      data ArgPat p = ExplicitPat !(LPat p) | InstPat !(Loc (InstBinder p))
+      data InstBinder p = InstVar !(XId p) | InstWild !(XPWild p)
+    for `Abs` and `DDef` clauses (`PInst` removed; `PCon` keeps `[LPat p]`
+    for now and would become `[ArgPat p]` when constructors take instance
+    arguments, a future relaxation the user wants kept in mind); C-2's
+    per-step decision factored out so constructor fields can reuse it.
+    Open questions: adopt it at all; binder-only `InstBinder` vs
+    `InstPat !(LPat p)` with a content check; staging of `PCon`.
+    Until decided, the type-checking items keep `PInst`. Details in
+    "TODO / known issues".
+  - Decided 2026-11-04: H-1 (no `InstArg` case; `InstHole` is `absurd`).
+  - Revised 2026-11-04 (raised at H-2): D-2 plan (M1): trailing insertion
+    only in Check mode; `Let1`'s `e1` and `case`'s scrutinee are checked
+    against a fresh meta [amended by (F1): inferred with the expand-last
+    flag]; sig-less `def g = elem` still needs a sig.
+  - Decided 2026-11-04: H-2 (REPL: tables passed; goals solved before
+    generalization; no trailing insertion at the top).
+  - Found 2026-11-04 after H-2: D-2 (M1)'s "check `e1` / `e0` against a
+    fresh meta" would reject higher-rank programs accepted now (tested,
+    see D-2). Fixed by (F1): an "expand last" flag (as Agda); `e1` / `e0`
+    inferred with the flag set.
+  - Decided 2026-11-04: H-3 (no special treatment for `rev`), H-4-1
+    (expressions / patterns; `XOp` makes `Op` absent after type checking;
+    `numberOfArgs` counts `InstFunTy`).
+  - Decided 2026-11-04: H-4-2 (a) (a dedicated constructor per class),
+    H-4-3 (method / projection values; `NDict`, `NSuperProj`,
+    `NDefault` names), H-4-4 (instance values with `let self`; default
+    values).
+  - Decided 2026-11-05: H-4-5 (one recursive group; value tables keep
+    instance / projection / default names, transitively; settles B-4 (4)).
+  - ALL DESIGN ITEMS (A .. H) ARE DECIDED. Still on hold: the pattern
+    revision (`ArgPat`, see TODO). Next: implementation, when the user
+    asks.
+  - Implementation planning (2026-11-05): decided to implement with
+    `PInst` as is; the `ArgPat` revision stays on hold (TODO) and may be
+    done later. Stage plan presented (0 AST / names, 1 refactoring
+    without classes, 2 types / environments / registration, 3 insertion
+    and search, 4 bodies, 5 desugaring / evaluation / modules, 6 samples
+    and tests); approved by the user, with one commit per stage (push
+    only when asked). See "Implementation plan" below.
+  - Next: stage 0 (details to be confirmed before coding).
+
+Implementation plan (approved 2026-11-05)
+-----------------------------------------
+
+`cabal test` must pass at the end of every stage; one commit per stage.
+  0. AST and names: expression `Arg` (revision (c)), `XOp`, `XHole` /
+     `InstHole`; parser, renaming, typing and desugaring adapted
+     mechanically; `Name.hs`: `Phase` `TypeChecking` (B-3 (6)),
+     `SystemName` `NDict` / `NSuperProj` / `NDefault` (H-4-3). Patterns
+     keep `PInst`. Check: existing tests pass; `Examples-Class` still pass
+     renaming.
+  1. Type-checker refactoring without classes: spine checking (D-1, D-3,
+     D-6), the expand-last flag (D-2 (M1) / (F1)) used for `Let1` /
+     `Case`, `checkSigDef` (G-5 1), the `alignPatsTy` frame (C-2, `FunTy`
+     rows only). Check: existing tests (esp. `Poly.sparcl`) and the (F1)
+     regression sample (`t1` / `t3`); no behaviour change without classes.
+  2. Types, environments, registration: `InstFunTy` helpers and the
+     subsumption case (A-1 .. A-4), `ClassInfo`, instance table,
+     `TypingContext` / `ModuleContext` extensions (B-1 .. B-4),
+     `ErrorDetail`s (E-5), stages 1 .. 3-a of `inferTopDecls` (G-1, G-2,
+     G-3 1, G-4); remove the `staticError` rejection. Check: files with
+     only declarations type-check; error examples raise
+     `StaticException`.
+  3. Insertion and search: C-1, C-2 (`InstFunTy` rows), C-3, C-4, D-1 /
+     D-2 instance rows, goals and holes (E-1, F-3), search (E-2 .. E-4),
+     superclass check (G-3 3-b), REPL goals (H-2). Check: explicit,
+     implicit and local-instance examples; `:type`; error examples.
+  4. Bodies: G-5, `NotAMethod` / `MissingMethod`, extended results
+     (G-1 6). Check: `Examples-Class` (except `Functor.sparcl`)
+     type-check.
+  5. Desugaring, evaluation, modules: H-4-1 .. H-4-5. Check: run
+     `Invertible.sparcl` `t1` .. `t9` etc.; a multi-module sample.
+  6. Samples and tests from TODO; move working `Examples-Class` files to
+     `Examples/`; update CLAUDE.md.
+  Higher-kinded classes (`Functor.sparcl`, type-variable application in
+  the type parser) come after this plan (plan alpha).
+  - Not yet presented: none.
+  - Issues found in a consistency review (2026-11-03):
+      (I1) RESOLVED: "Scope and staging" / B-1 gave classes the kind
+           `... -> Constraint`, which contradicts Q1 (`Eq a -> Bool` needs
+           `Eq a : Type`). Decided: classes have kind `... -> Type` (as
+           Lean / Agda) and "is a class" stays a check via the class table
+           (texts fixed).
+    To be resolved:
+      (I2) RESOLVED by B-5 (b): Renaming (b) said the method type is
+           `forall a. {{C a}} -> <sig type>` (nested forall); fixed.
+      (I3) RESOLVED by B-2 (2) and B-3 (2, 3); E-3 is to follow it.
+           Was: only declared instances and variables bound
+           by `{{x}}` (or inserted abstractions) are instance candidates;
+           ordinary values of a class type (Q1) are not.
+      (I4) Items left to type checking by Renaming but missing from the
+           plan: a method sig not mentioning the class parameter
+           (`sig k : forall a. a -> a`, cf. Renaming (b)) -- RESOLVED by
+           G-2 (5): allowed; restrictions on instance head arguments
+           (Renaming DInst (b) 2) -- RESOLVED by E-4 (4): no restriction.
+  - No type-checking code has been written yet.
+
+Positions of class types
+------------------------
+
+Decided (2026-11-03):
+  - Q1 allowed: a class type is an ordinary type (the type of its
+    dictionary) and may appear anywhere a type may (`Eq Int -> Bool`,
+    `List (Eq a)`, `def d = eqNat`), as recorded in Design.
+  - Q2 rejected: the type inside `{{ }}` must be an application of a class
+    to the right number of arguments (`{{Int}}`, `{{a}}`, `{{Int -> Int}}`,
+    `{{List a}}` are errors). Reason: instance search only considers
+    declared instances (and instance-bound locals), so `{{Int}}` could only
+    ever be filled explicitly, and for `{{a}}` the class to search is not
+    even known. Checked by the type checker (it needs class information,
+    including imported classes), on the types written by users after
+    synonym expansion; see B-1 for the list of checks.
+
+Two separate questions:
+  (Q1) explicit use of class types: may a class type appear outside
+       `{{ }}` (`sig h : Eq Int -> Bool`, `def d = eqNat`, `List (Eq a)`)?
+  (Q2) implicit passing of non-classes: may a non-class type appear inside
+       `{{ }}` (`sig f : {{Int}} -> Bool`, `{{a}}`, `{{Int -> Int}}`)?
+What has been recorded / implemented so far:
+  - Design (top of this note): "a class is an ordinary type constructor
+    (the type of its dictionary)"; the ambiguity example there uses
+    `sig f : {{Eq a}} -> Eq a -> a -> Bool`, i.e. Q1 = allowed was assumed.
+    Renaming / InstArg: "The contents `e` themselves are an ordinary value
+    (`def d = eqNat` is fine)". Type checking A-2 / A-3 also assume
+    `Eq a -> ...` is a valid type.
+  - History: a proposal to restrict class types to `{{ }}` positions
+    (Haskell-like; with a dedicated `TInst` node) was discussed on
+    2026-10-28 but that branch of the conversation was rolled back; the
+    adopted proposal was "class = ordinary type, `TCon nameTyInstArr`,
+    `InstArg`" (approved). No decision on Q2 is recorded.
+  - Parser: `{{ typeExpr }} -> t` accepts any type inside the braces.
+  - Renaming: no check of the contents of `{{ }}` in `sig` types; only
+    instance types and superclasses are checked for the shape `TCon c ts`
+    (`isClassAppTy`, which does not know whether `c` is a class, so
+    `instance : List Int` passes renaming). Class types outside `{{ }}` are
+    not checked either. Verified: `sig f : {{Int}} -> Bool` and
+    `sig g : {{a}} -> {{Int -> Int}} -> Bool` pass parsing and renaming
+    (then hit the unimplemented `PInst` case of the type checker);
+    `sig h : Eq Int -> Bool` passes renaming.
+  - Samples (Examples-Class/): class types occur only inside `{{ }}`, in
+    instance heads and in `extends`; instance names are used only inside
+    `{{ }}`. Neither Q1 nor Q2 is exercised. No test (Nonexamples) covers
+    them.
+
+Scope and staging (kinds)
+-------------------------
+
+Higher-kinded classes (`class Functor f`, `f : Type -> Type`) are in the
+scope of this extension, but are handled in a separate, later stage
+("kinds and higher-kinded types"); plan (alpha).
+- Current Sparcl has no kind checking (`typeKi` / `arrKi` in Type.hs are
+  unused) and no arity check of type constructors (`ty2ty` maps
+  `TCon c ts` to `TyCon c ts` as is; e.g. `List Int Int` is probably
+  accepted). Multiplicity variables (`p` in `a # p -> b`, `q <= s`) are
+  ordinary type variables, distinguished only by position.
+- First stage (now): type checking of classes/instances for first-order
+  classes (all class parameters of kind `Type`); Eq/Ord-like examples.
+  Instead of kind checking, ad hoc checks using the class table (B-1;
+  see "Positions of class types"): the type in `{{ }}`, an instance head
+  and a superclass are applications of a class, and every application of
+  a class (inside or outside `{{ }}`) has the right number of arguments
+  (rejects `{{List a}} -> ...`, `{{Int}}`, `instance : List Int`,
+  `{{Eq a b}}`, `Eq a b -> Bool`; `Eq a -> Bool` is accepted). These
+  checks are to be subsumed by kind inference later, except "is a class"
+  (inside `{{ }}`, instance heads, superclasses), which stays a check via
+  the class table since classes have kind `... -> Type` (I1).
+- Later stage: kind inference (kinds `Type`, `Multiplicity`, `k -> k`,
+  kind meta variables; a class has kind `k1 -> ... -> kn -> Type`, like a
+  data type, since a class type is an ordinary type (Q1) and there is no
+  separate `Constraint` kind (I1); class/data/type parameters and sig type
+  variables are inferred, since e.g. the kind of `f` in Functor is written
+  nowhere), with
+    1. parser / surface AST: type-variable application `f a`
+       (e.g. `TApp`);
+    2. internal `Ty`: application headed by a variable / meta variable
+       (e.g. `TyApp Ty Ty`);
+    3. `unify`: partially applied `TyCon` (`TyApp f a` ~ `TyCon List [Int]`
+       gives `f := TyCon List []`);
+    4. a kind table in `ModuleContext`, kinds of built-in types in
+       `baseModuleInfo`;
+    5. instance heads such as `Functor List` (`TyCon Functor [TyCon List []]`)
+       in instance search.
+  The design of B-H hardly depends on this; expected rework: kinds of
+  class parameters in `ClassInfo`, partial applications in matching.
+- Why (alpha) rather than building kinds first (beta): smaller steps, each
+  checked with existing tests and class examples; changes to `Ty` / `unify`
+  are separated from the class machinery, which eases isolating
+  regressions. Cost: the ad hoc checks above are temporary.
+
+Internal representation of types
+---------------------------------
+
+- (A-1) A pattern synonym `InstFunTy c t` for `TyCon nameTyInstArr [c, t]`
+  is added to Typing/Type.hs, like `FunTy`, and `Pretty Ty` prints it as
+  `{{c}} -> t` (same precedence as `->`). No new `Ty` constructor, as in
+  the surface AST: functions traversing `Ty` (`substTy`, `zonkType`,
+  `capLevel`, `metaTyVarsGen`, `freeTyVars`, ...) and `unify` work
+  unchanged. NB: since the generic `TyCon` treatment silently applies to
+  `InstFunTy`, places that must treat it differently (subsumption, matching
+  argument patterns against arrows, application) need explicit cases; the
+  compiler does not warn about missing ones.
+- (A-2) No change to `ty2ty` (`S.TCon` is mapped to `TyCon`, so `{{C}} -> t`
+  becomes `InstFunTy C t`), `unify` (same-named `TyCon`s are unified
+  componentwise after an arity check), substitution / zonking,
+  `resolveSyn` (synonyms such as `type EqF a = {{Eq a}} -> a -> Bool` are
+  expanded as usual), generalization and `quantify`. Notes:
+    - `unifyWork` reports `UnMatchTy` for different constructor names, so
+      `{{Eq a}} -> Bool` and `Eq a -> Bool` do not unify, as intended
+      (instance arguments and ordinary arguments are different).
+    - A meta variable may be bound to an `InstFunTy` (e.g. an argument of
+      `sig k : ({{Eq a}} -> a -> Bool) -> ...`); this is a valid type and
+      is not prohibited. Its interaction with "no application insertion for
+      a head whose type is a meta variable" is discussed in D-5.
+    - `numberOfArgs` in Desugar.hs counts only `nameTyArr` arrows to decide
+      the number of arguments of a definition; it must also count
+      `InstFunTy` (see H-4, desugaring). [Corrected by H-4-1: it is used
+      only for eta-expanding constructors (`Con` / `RCon`); the arity of a
+      `def` comes from its patterns (`desugarRHS`). It counts `InstFunTy`
+      too, in preparation for constructors with instance arguments; no
+      effect now (D-4).]
+- (A-3) `subsumptionCheckBody` gets a case
+    (InstFunTy c1 r1, InstFunTy c2 r2) ->
+      tryUnify c1 c2; subsumptionCheckBody isRightGiven r1 r2
+  The class types are compared by equality (they are monotypes, so
+  contravariance is meaningless) and the results covariantly (as for
+  `FunTy`). Without it, two `InstFunTy`s would fall into the final
+  `unify` case and their results would be compared by equality.
+  `InstFunTy` vs `FunTy` stays a type error (via `ensureFunTy`).
+  Subsumption never elaborates terms, so no instance argument is inserted
+  here (e.g. `forall a. {{Eq a}} -> a -> Bool` is not usable as
+  `Nat -> Bool` by subsumption); insertion happens only in C (abstraction)
+  and D (application), based on the shape of expressions.
+  Why `InstFunTy` vs `FunTy` is an error although it would be sound (both
+  are functions taking a dictionary at run time, so either direction
+  could be accepted without changing terms):
+    1. consistency with `unify`, which distinguishes them: subsumption is
+       used only at the outer arrows, unification under type constructors,
+       so identifying them only in subsumption would make
+       `k elemD` (k : (Eq a -> a -> Bool) -> ...) accepted but
+       `ks (Cons elemD Nil)` (ks : List (Eq a -> a -> Bool) -> ...) rejected;
+    2. keeping "whether an argument is inserted is fixed by `{{ }}` in the
+       type" (D, C-2) predictable;
+    3. Agda (as far as we recall) does not identify Pi types of different
+       visibility, while Lean 4 ignores binder info in definitional
+       equality; there are precedents either way;
+    4. conversions are easy to write by eta-expansion:
+       `\{{d}} -> h d`, `\d -> f {{d}}`.
+  (Alternative: identify them, as in Lean; then `unify` must do so too.)
+- (A-4) `ensureFunTy` is unchanged: it is for ordinary arrows only (an
+  `InstFunTy` given to it is a type error by unification, as in A-3), and
+  no `ensureInstFunTy` is introduced, i.e., the type checker never
+  instantiates a meta variable to an `InstFunTy` on its own. A type is an
+  `InstFunTy` only when it comes from a signature (a meta variable may
+  still become one by unification with such a type, A-2).
+  `ensureInstFunTy` would be needed only where an explicit `{{ }}` meets a
+  type that is still a meta variable:
+    1. an instance pattern `{{p}}` without a known expected type (`def`
+       without `sig`, `\{{d}} -> ...` in Infer mode) -> an error requiring
+       an annotation (C-4);
+    2. an explicit instance argument `f {{e}}` where the type of `f` is a
+       meta variable -> an error (D-1, D-5).
+  Why: (i) instance arguments are not inferred (otherwise `{{C a}} ->`
+  would appear in, and be generalized into, types of unannotated
+  definitions), and (ii) insertion (C-1, D-1) depends on whether a type is
+  an `InstFunTy` when it is checked, so a checker-made path turning a meta
+  variable into an `InstFunTy` would make insertion decisions more
+  dependent on the checking order (the remaining path via unification is
+  discussed in D-5).
+  Uses of `ensureFunTy` in `App`/`Op` are replaced by the spine checking
+  (D-1, D-3), which uses it only for `FunTy` and for explicit arguments
+  applied to a meta variable; `ensureFunTyN` is replaced by the
+  instance-aware alignment (C-2).
+
+Class and instance environments
+-------------------------------
+
+- (B-1) A class table in TCMonad.hs:
+    data ClassInfo = ClassInfo
+      { ciParams   :: [TyVar]       -- class parameters (BoundTv of Alpha 0..)
+      , ciSupers   :: [Ty]          -- superclasses (ciParams free)
+      , ciMethods  :: [(Name, Ty)]  -- methods and their sig types (ciParams free)
+      , ciDefaults :: [Name]        -- methods with a default implementation
+      }
+    type ClassTable = Map Name ClassInfo
+  built from `ClassDeclR` by `ty2ty`; class parameters stay `BoundTv` and
+  are instantiated by `substTy` when used. `TypingContext` gets
+  `tcClassEnv :: !ClassTable`, a read-only environment like `tcSyn`
+  (set via `runTCWith` / `setEnvs`, together with B-4). Used for method
+  types (B-5), checking instance declarations (G: missing/extra methods,
+  defaults, superclasses), superclass projections in instance search
+  (E-3), and the ad hoc class checks replacing kind checking (see "Scope
+  and staging" and "Positions of class types"). Class types such as
+  `Eq a` are plain `TyCon Eq [a]` and are valid anywhere (Q1);
+  classes are not registered as type constructors (there is no kind
+  table yet). In the later kinds stage, `ClassInfo` gets the kinds of
+  its parameters and class names get kinds `... -> Type` (I1).
+- (B-2) Instance table and instances in the value environment.
+    1. The type of an instance is its declared type (`InstDeclR`) made a
+       polytype by `ty2ty`, e.g. `eqList : forall a. {{Eq a}} -> Eq (List a)`.
+       By Q1 an instance is an ordinary value of a class type.
+    2. `type InstTable = Map Name (Map Name Ty)` (class name -> instance
+       name -> type; amended by B-4 (5) from `Map Name [(Name, Ty)]` so that
+       the same instance reached by several import paths is one entry);
+       `TypingContext` gets `tcInstEnv :: !InstTable`
+       (read-only, as B-1). The global candidates of instance search are
+       exactly the entries of this table, i.e. instance declarations; an
+       ordinary `def myEq : Eq Nat = ...` is not a candidate (I3, global
+       side; the local side is B-3).
+    3. Instance names (including generated `System (NInstance k)` ones,
+       which users cannot refer to) are registered in `tcTyEnv` with these
+       types as ordinary global values, so `elem {{eqNat}} x xs` and
+       `def d = eqNat` are typed by the existing `Var` case. Global values
+       are unrestricted, so no multiplicity treatment is needed.
+    4. Both are registered before any `def` is checked (G: "register
+       first"), since the types depend only on the declarations; hence
+       instances can be referred to from `def`s and from each other
+       regardless of the declaration order.
+    5. Checked at registration (G-1): the head is an application of a
+       class with the right number of arguments (`isClassAppTy` in
+       renaming checks only the shape, so `instance : List Int` is
+       rejected here), and the instance arguments satisfy Q2.
+- (B-3) Scope of local instances.
+    1. `TypingContext` gets `tcLocalInsts :: ![(Name, Ty)]` (variable and
+       its class type, which may contain skolems of the enclosing sig),
+       extended by `local` (`withLocalInst`), like `tcTyEnv`.
+    2. Registered (I3, local side): (a) variables bound by `{{x}}` (C-3),
+       including `{{_}}` (renaming names it `Alpha level (User "_")`;
+       `{{_}}` means "unnamed", not "not an instance"); (b) variables of
+       inserted abstractions (C-1). Instance arguments in instance bodies
+       and the class's own `{{C a}}` in default methods (G) come in as (a)
+       or (b), since those bodies are checked against `InstFunTy`.
+    3. Not registered: variables of a class type bound otherwise (ordinary
+       patterns, `let`, `def`, `case`; e.g. `\d -> ...` with `d : Eq a`,
+       allowed by Q1). As in Agda, only what is bound as an instance is a
+       candidate, so candidacy is decided by the syntactic mark `{{ }}`.
+    4. Variables of (a) are also put in `tcTyEnv` (by `withVar`, Omega), so
+       by Q1 `eq` from `{{eq}}` is an ordinary value (`elem {{eq}}`,
+       `let d = eq`).
+    5. Lexical scope, as the value environment: visible in inner
+       expressions, `where` clauses and local `def`s. Example:
+         sig count : {{Eq a}} -> a -> List a -> Int
+         def count {{eq}} x xs = go xs
+           where
+             def go Nil         = 0
+                  | (Cons y ys) = case y == x of
+                                    True  -> 1 + go ys
+                                  | False -> go ys
+                                  end
+           end
+       `a` is a skolem of `count`, `eq : Eq a` is a local instance,
+       `x : a`. In `go` (no sig), `y == x` instantiates
+       `(==) : forall b. {{Eq b}} -> b -> b -> Bool` with `?b`, inserts a
+       goal `Eq ?b` (keeping the visible locals `[eq]`), and `y`, `x` give
+       `?b = a`. After `go`'s body the goal is `Eq a`; no global instance
+       head matches the skolem `a`, so it is solved uniquely by `eq`;
+       `go : List a -> Int` (not generalized over the outer skolem).
+       Without `{{eq}}` (`def count x xs = ...`), the variable of the
+       inserted abstraction (C-1) plays the same role.
+       A goal keeps the list at its creation (E-1), so it is searched in
+       the right scope even when solved later. Local variables are named
+       by de Bruijn levels (`Alpha`), unique along a scope path, so inner
+       bindings cannot capture a candidate.
+    6. Variables of inserted abstractions get names
+       `Generated i TypeChecking` (a new `Phase` constructor), numbered by
+       a new counter in `TypingContext`. `Generated` is used only by
+       Desugar (numbered from 0) and REPL now; separate phases avoid
+       clashes.
+- (B-4) Classes and instances across modules (Module.hs).
+  Existing module system (for reference): `module M (x, y) where` (optional;
+  default `Main` without an export list), `import M` / `import M (x, T)`
+  (bare names only; no `T(..)`, constructors are listed separately);
+  modules are found as `M.sparcl` (`A.B` -> `A/B.sparcl`) in the search
+  path, processed once and cached by module name; `Base` is implicit.
+  Without an export list a module exports exactly its own definitions (no
+  re-export); with one, the listed names among its own and imported ones.
+  Import/export lists filter all tables by names (`restrictNames`).
+  No sample or test uses modules.
+    1. `ModuleContext` gets `mcClassTable :: ClassTable` and
+       `mcInstTable :: InstTable`; `inferTopDecls` also returns the module's
+       class and instance tables, and its `nts` include the types of
+       instances and methods; `execTCWith` / `runTCWith` take both tables
+       and set `TypingContext` (B-1, B-2).
+    2. Class and instance tables are not filtered by import/export lists
+       (`restrictNames` leaves them), as in Haskell / Lean: instances are in
+       effect whenever their module is loaded. Unnamed instances cannot be
+       listed; class information is needed for search (superclasses)
+       whenever a class occurs in an imported type, even if its name is not
+       imported. Visibility of names (`eqNat`) is still controlled by the
+       name table.
+    3. Transitive: the tables of a new module are its own plus those of all
+       imported modules, with or without an export list (types of B's
+       functions may mention A's classes, needed when C imports only B).
+    4. Run time: a `Var eqNat` inserted by search needs the value even if
+       the name is not imported, so `restrictNames` does not filter value
+       table entries of names in the instance table (unnamed ones
+       included). Default methods and superclass projections may need the
+       same; to be checked with the dictionary representation (H-4).
+       [Settled by H-4-5: `NSuperProj` / `NDefault` names are kept too, and
+       these values are propagated transitively.]
+    5. `InstTable` is `Map Name (Map Name Ty)`, merged by
+       `M.unionWith M.union` (diamond imports deliver the same instance
+       twice; plain list concatenation would make search ambiguous). Class
+       tables are merged by `M.union`.
+  Uniqueness of instance names: `Name` equality of `Original` compares
+  (module name, base name); names are unique within a module (renaming's
+  duplicate check; `NInstance k` by position, a `System` name), and module
+  names are unique in a loaded program (cache by name, check that a file
+  defines the imported module name). So "same name, different instance"
+  cannot occur (except the `Main` issue in TODO); different instances for
+  the same class and type in different modules (`A.eqNat`, `B.myEqNat` :
+  `Eq Nat`) are not merged and are an overlap issue for E-4 (detect at
+  merge or at use).
+  How Agda / Lean treat several distinct matching candidates (Agda part
+  checked in its documentation, 2026-11-04; Lean from memory): Agda
+  unifies each candidate's type with the goal and discards only definite
+  mismatches (metas of the goal may be instantiated); none -> error,
+  exactly one (non-incoherent) -> chosen, several -> postponed, error if
+  still ambiguous at the end; local instance variables are candidates
+  with no stated priority over global ones (overlap pragmas /
+  `--overlapping-instances` in recent versions). Lean 4
+  does not report ambiguity: candidates are tried by priority, then the
+  most recent first, with backtracking; overlap is allowed (incoherence
+  possible). Haskell rejects overlap at use sites unless pragmas.
+- (B-5) Global types of methods: all foralls in front, plan (b).
+  For `class C a1 ... an` and a method `sig m : forall bs. cs => t`
+  (the parser quantifies only the non-class variables `bs`; `cs` are
+  multiplicity constraints), the global type of `m` is
+    forall a1 ... an bs. cs => {{C a1 ... an}} -> t
+  e.g. `sig m : a -> b -> b` in `class C a` gives
+  `forall a b. {{C a}} -> a -> b -> b`.
+  Since `bs` do not occur in `C a1 ... an`, this is equivalent to the
+  nested form `forall as. {{C as}} -> forall bs. cs => t` (plan (a)),
+  which Haskell / Lean / Agda use; there the order is observable through
+  explicit type application or named implicit arguments, which Sparcl
+  does not have.
+  Why (b): `Var` is instantiated at once by the existing `instantiatePoly`
+  (with (a) the `forall bs` left after the inserted instance argument
+  must be instantiated again); multiplicity constraints stay at the top as
+  in ordinary `sig`s instead of a `TyQual` under an arrow (higher-rank
+  path); methods do not depend on D-1 instantiating a `TyForAll` in the
+  middle of a spine (which D-1 still supports for user-written
+  `{{Eq a}} -> forall b. ...`). Checking instance bodies (G) uses the sig
+  types in `ciMethods`, so it does not depend on this choice.
+  No capture: sig type variables are named by `Alpha` indices distinct
+  from the class parameters, also when an explicit `forall a` shadows a
+  class parameter. Renaming (b) is fixed accordingly (I2).
+
+Abstraction insertion
+---------------------
+
+- (C-1) At the entry of `checkTy` (before `go expr`): if the expected type
+  is `Check t` and `t` zonks to `InstFunTy c t'` (zonk: a meta variable
+  may hold an `InstFunTy`, A-2), a fresh `d = Generated i TypeChecking`
+  (B-3 (6)) is registered with type `c` in the value environment (Omega)
+  and as a local instance (B-3), and the same expression is checked
+  against `t'` (recursively, so `{{Eq a}} -> {{Ord b}} -> ...` gives two
+  abstractions). Result: `Abs [PInst (PVar (d, c))] e'`; `d` is removed
+  from the use map (Omega, so no multiplicity constraint). Being at the
+  entry, it applies to every form of expression.
+  No insertion:
+    - Infer mode (no expected type; A-4, C-4);
+    - expected type still a meta variable (A-4, D-5);
+    - `Abs` whose first pattern is `{{p}}`: bound by the user; C-2 aligns
+      it with the `InstFunTy`;
+    - `Parens`: the expected type is passed inside and decided there
+      (otherwise `(\{{d}} -> e)` would get an insertion outside and its
+      `{{d}}` would face a `FunTy`);
+    - `Sig` `(e : T)`: `e` is checked against `T` (inserting there if `T`
+      is an `InstFunTy`), then `T` is compared with the expected type by
+      subsumption (A-3); inserting first would compare `T` with `t'` and
+      always fail when `T` is `{{...}} -> ...`.
+  Example: `sig g : {{Eq a}} -> a -> a -> Bool; def g = (==)`: the body
+  `(==)` is checked against `{{Eq a}} -> a -> a -> Bool` (`a` skolem);
+  `d : Eq a` is inserted and `(==)` is checked against `a -> a -> Bool`;
+  `(==)`'s leading `{{Eq ?b}}` gets a goal by D-2, `?b = a`, solved by `d`;
+  the result is `\{{d}} -> (==) {{d}}`.
+  Polytypes need nothing special: `checkPolyTy` skolemizes, and the body
+  type starting with `InstFunTy` is handled at the entry of `checkTy`.
+  Reconsidered (2026-11-04), C-1 kept as is (plan (P)). Alternative (Q):
+  compare the expected type with the synthesized type before subsumption
+  (`instantiatePoly`), at `Var` and at spines (after the head type is
+  known, before the arguments are checked; `Let1` treated as
+  `(\p -> e2) e1`); if the synthesized type is also an `InstFunTy`, unify
+  instead of inserting (no eta-expansion `\{{d}} -> f {{d}}`).
+    1. Non-spine forms (`Abs` in Check mode, `Let decls`, `Case`, `RDO`,
+       `where`) would still need insertion at the entry (e.g.
+       `def f = let def g y = y == y in g` with `{{Eq a}} -> a -> Bool`:
+       the goal of `g` must see `d`), so there would be two mechanisms;
+       heads checked in Infer mode create goals before `d` exists.
+    2. (iii) A spine whose result type is still a meta: unifying the meta
+       with the expected `InstFunTy` and inserting are both order
+       dependent and incomparable:
+         sig t3 : {{Eq Int}} -> Bool
+         def t3 = (\h -> h 1 1) (==)        -- only inserting accepts
+         sig t4 : {{Eq Int}} -> Int -> Int -> Bool
+         def t4 = (\xs -> case xs of Cons g _ -> g end) fs
+                                            -- only unifying accepts
+                                            -- (fs of D-5)
+       Inserting is chosen (as Agda).
+    3. (Q) would accept `sig k : forall b. {{C b}} -> Int`,
+       `sig f : {{C a}} -> Int`, `def f = k` (unify `C ?b` with `C a`);
+       under (P) it is `AmbiguousGoal` (E-4 (1), one-way matching). Agda
+       accepts it by instance search (unification with candidates), not
+       by insertion; reconsider at E-4 if needed. Eta-reduction, if
+       wanted, belongs to desugaring (H-4).
+  Agda (checked in the source, master, 2026-11-04): `checkExpr'` calls
+  `tryInsertHiddenLambda` (`Rules/Term.hs`) before synthesizing anything;
+  it inserts `λ {{x}} →` whenever the reduced expected type is a hidden /
+  instance Pi, unless the expression is a lambda of the same hiding or a
+  hole `?`, or `ReallyDontExpandLast` is set, which happens only for
+  arguments of an application whose head is a user-written meta (`?`,
+  `_`; `turnOffExpandLastIfExistingMeta`, `Rules/Application.hs`, issues
+  #3019 / #4170). Trailing hidden arguments are added "until type is no
+  longer hidden 'Pi'" (`ExpandLast`). An expected type that is a meta
+  gets no insertion; applications whose head type is unknown are
+  postponed (`postponeTypeCheckingProblem`; D-5 (b), rejected here).
+- (C-2) `ensureFunTyN` (`inferMutual` with and without sig, `Abs` in Check
+  mode) is replaced by `alignPatsTy :: [LPat] -> BodyTy -> TC ([Slot], BodyTy)`
+  with `Slot = Explicit (PolyTy, MultTy) | Inst c | Inserted c`. It zonks
+  the type and aligns patterns with arrows from the left; each row
+  consumes at most one pattern and is repeated on the rest of the type:
+    type            next pattern            action
+    InstFunTy c t   {{p}}                   Inst c, consume the pattern
+    InstFunTy c t   other (patterns left)   Inserted c, consume nothing
+    FunTy           {{p}}                   error ("not an instance argument")
+    FunTy           other                   Explicit (as now)
+    meta            {{p}}                   error: "an instance pattern needs
+                                            a type annotation" (C-4 (b))
+    meta            other                   Explicit by ensureFunTy (as now)
+    anything        no patterns left        stop; the rest is the body type
+  (A run of metas without `{{p}}` is exactly `ensureFunTyN`, which is
+  `ensureFunTy` repeated.) With a meta and a later `{{p}}`, `ensureFunTy`
+  first binds the meta to a `FunTy` and the `{{p}}` then hits the
+  "meta / {{p}}" row; the accepted programs are the same as with a
+  look-ahead check (the rest is a fresh meta, not unified elsewhere before
+  the patterns are checked), so the simpler per-step rule is used, with
+  the error reported at the `{{p}}`. Metas occur in the spine only without
+  a sig (sigs are closed and skolemized) or for `\ ... {{p}} ...` whose
+  type is unknown (e.g. an argument of `id`).
+  Use in clauses and `Abs`: an `Inst c` slot checks the pattern with
+  multiplicity Omega against `Check c` (C-3); an `Inserted c` slot puts a
+  new `PInst (PVar d)` at that position and registers `d` (B-3). So after
+  type checking, the patterns of every clause correspond one-to-one to
+  the arrows (`FunTy` / `InstFunTy`) of the type, which desugaring can
+  rely on (H-4: `numberOfArgs` counts `InstFunTy` [corrected by H-4-1:
+  the arity of a `def` comes from its patterns; `numberOfArgs` is for
+  constructors]). By Renaming (iii) all
+  clauses have `{{ }}` at the same positions, so the alignment is computed
+  once from the first clause (as `numPatterns` now) and applied to all;
+  inserted variables are fresh per clause.
+  Trailing `InstFunTy` after the patterns are exhausted is left to C-1 in
+  the body (plan (1)). Rejected: absorbing it in the clause, which would
+  let `where`/`with` see it but rejects correct programs such as
+    sig f : a -> {{Eq a}} -> Bool
+    def f x = \{{d}} -> x == x          -- body checked against Bool
+  (and bodies `(e : {{Eq a}} -> Bool)`), ignoring C-1's exceptions; and
+  absorbing depending on the body shape, which makes the patterns of
+  clauses differ (breaking Renaming (iii) and the uniform arity desugaring
+  needs). Limitation of plan (1): a trailing instance argument is not
+  visible from `where` declarations, and `with` (which requires a `rev`
+  expected type, `expectRevTy` in `checkClauseTy`) fails for
+  `... -> {{C a}} -> rev T`. Workaround: bind it on the left-hand side,
+  `def f x {{_}} = go where def go = x == x end` (`{{_}}` is a local
+  instance, B-3). (Agda also seems not to insert trailing implicit
+  patterns on the left-hand side; from memory, not checked.)
+  Unchanged: a `forall` in the middle (`{{Eq a}} -> forall b. b -> ...`
+  with patterns beyond it) is not supported, as with `ensureFunTyN` now
+  (pre-existing); alignment stops there.
+- (C-3) `checkPatTyWork` gets `go (PInst p)`.
+    1. The expected type is always `Check c` (a class type): it is called
+       only for `Inst c` slots of C-2 (by Renaming (ii), `{{p}}` occurs only
+       as an argument pattern of `def` / `\`, both aligned by C-2); `Infer`
+       is an internal "cannot happen" error. By Renaming (i) `p` is a
+       variable or `_` (renamed to the variable `Alpha level (User "_")`),
+       handled as `PVar x`. Result `PInst (PVar (x, c))`, binding
+       `[(x, c, Omega)]` (C-2 passes Omega); an instance argument may be
+       used any number of times (cf. Invertible.sparcl).
+    2. Registration as a local instance is done by the caller (clauses /
+       `Abs` applying the C-2 alignment): variables of `Inst c` and
+       `Inserted c` slots are collected (syntactically known before type
+       checking, by Renaming (i)) and the body is checked under
+       `withLocalInst` (B-3). The result type of `checkPatsTyK` is
+       unchanged.
+    3. `hasPRev (PInst p)` is always false, so `{{p}}` does not trigger the
+       checks for invertible patterns (`ensureRevTy`).
+- (C-4) An instance pattern `{{p}}` where the type is unknown requires a
+  type annotation, plan (b): `def f {{d}} x = ...` without `sig`,
+  `\{{d}} -> ...` checked in Infer mode (e.g. `let g <- \{{d}} x -> ... in`),
+  and `\ ... {{d}} ...` at a position whose type is still a meta variable
+  (e.g. `id (\{{d}} -> ...)`) are errors "an instance pattern needs a type
+  annotation". Implementation: the "meta / {{p}}" row of C-2, and `Abs` in
+  Infer mode (`Typing.hs:464`, which makes a fresh meta per argument)
+  reports the same error if a pattern is `{{p}}`.
+  Rejected (a): inferring `{{?c}} -> ...` with a fresh `?c`; it needs
+  `ensureInstFunTy` (rejected in A-4), `?c` may stay undetermined so that
+  Q2 cannot be checked, and generalization would put `{{C a}} ->` into
+  types of unannotated definitions (A-4 reason (i)).
+  Consequences: a `def` without `sig` may still use instances without
+  `{{p}}` if the goals of its body are solved there (all sig-less `def`s
+  of the samples, e.g. `def t1 = 1 == 1`); goals left polymorphic
+  (`def g x y = x == y`) are errors by E-2's recommendation (not yet
+  decided), so a `sig` is needed.
+  Workarounds:
+    - a `def`: write a `sig`;
+    - a local function: a local `def` with a `sig` (local `sig`s are
+      quantified by `introForAll` as top-level ones):
+        let sig g : {{Eq a}} -> a -> Bool
+            def g {{d}} x = x == x
+        in ...
+    - an expression annotation `(e : T)`: NB the type of `Sig` is parsed
+      by `typeExpr` without `introForAll` and renamed by
+      `renameTy 0 M.empty`, so free type variables are "Unbound type
+      variable"; write `forall` explicitly or a monotype:
+        (\{{d}} x -> x == x : forall a. {{Eq a}} -> a -> Bool)
+        (\{{d}} x -> x == x : {{Eq Int}} -> Int -> Bool)
+      (C-1's `Sig` exception lets the annotation give the type).
+
+Application insertion
+---------------------
+
+- (D-1) Applications are checked as spines (replacing `go (App e1 e2)`,
+  `Typing.hs:481`, which infers `e1`, applies `ensureFunTy`, checks `e2` by
+  `checkPolyTyM` and compares the result with `instantiatePoly`).
+    1. A chain `e0 a1 ... an` is split into the head `e0` and arguments
+       `Explicit e` / `Inst e` (`InstArg`); `Parens` around the head is
+       crossed (D-6).
+    2. Head type: for `Var x`, the polytype from `askType` as is (not
+       instantiated); otherwise `inferTy` (may be an `InstFunTy`, e.g.
+       `(g : {{Eq Int}} -> Int -> Bool) 3`).
+    3. Arguments are processed from the left, zonking the current type at
+       each step:
+         type            next argument   action
+         TyForAll        (any, or none)  instantiate with fresh metas;
+                                         multiplicity constraints become
+                                         wanted, as `instantiate` does now
+         InstFunTy c t   Inst e          check `e` against `Check c`; uses
+                                         raised by Omega
+         InstFunTy c t   Explicit e      insert an application: create a goal
+                                         (E-1) and put `InstArg (InstHole ref)`
+                                         (F-3);
+                                         the argument is not consumed
+         FunTy m a r     Explicit e      `checkPolyTyM e a m` (as now)
+         FunTy           Inst e          error "not an instance argument
+                                         position"
+         meta            Explicit e      `ensureFunTy`, then the FunTy row
+                                         (as now)
+         meta            Inst e          error "an instance argument cannot be
+                                         passed to a function of unknown
+                                         type" (A-4)
+         other           Explicit e      `ensureFunTy` fails by unification
+                                         (as now)
+    4. After the arguments: leading `forall` / `InstFunTy` of the rest are
+       handled by D-2; then the rest is compared with the expected type by
+       `instantiatePoly`, as now.
+    5. Use maps: the head's and each argument's, the latter raised by the
+       multiplicity of its arrow; `Inst` and inserted arguments by Omega.
+    6. Result AST: nested `App`s rebuilt, including inserted `InstArg`s;
+       the head `Var` carries its polytype (`Var (x, tyOfX)`), as now.
+    7. A `Var` without arguments also goes through this (a spine with zero
+       arguments), since trailing insertion (D-2, `def g = elem`) applies to
+       it. Without arguments and without `InstFunTy` in the rest, the
+       result is the same as the present `instantiatePoly tyOfX expectedTy`,
+       so higher-rank checking (`Examples/Poly.sparcl`) is unchanged.
+  `Op` is D-3, `Con` / `RCon` D-4, heads of meta type D-5.
+- (D-2) After the arguments are used up, leading `forall`s and
+  `InstFunTy`s of the rest are always instantiated / inserted (repeat
+  until neither), then the rest is compared with the expected type;
+  plan (a). E.g. `elem` alone, or `f x` with `f : Int -> {{Eq a}} -> ...`.
+  Why:
+    1. No conflict with the expected type: in Check mode an expected
+       `InstFunTy` has already been turned into an abstraction by C-1, so
+       the expected type of an application never starts with `InstFunTy`.
+       `sig g : {{Eq a}} -> a -> List a -> Bool; def g = elem` becomes
+       `\{{d}} -> elem {{?g}}` with `?g` solved by `d`.
+    2. Rejected (b), leaving `{{Eq ?a}} -> ...` uninserted: in Infer mode
+       (`def g = elem` without sig) it would infer and generalize instance
+       arguments (against A-4 (i), C-4); in Check mode the expected type
+       does not start with `InstFunTy` (C-1), so it would always be an
+       `InstFunTy` vs `FunTy` error (A-3).
+    3. Lean and Agda also insert trailing implicit arguments unless the
+       expected type takes them (from memory, not checked).
+  Consequences: `def g = elem` without sig leaves a polymorphic goal
+  `Eq ?a`, an error by E-2's recommendation (a sig is needed);
+  `let h <- elem in h 1 xs` gives `h : ?a -> List ?a -> Bool` with a
+  postponed goal `Eq ?a`, solved once `?a = Int`.
+  NB for E-4: with `sig f : {{Eq Int}} -> Int -> Bool; def f x = x == x`
+  both the local instance and the global `Eq Int` match the goal; without
+  "local instances take precedence over global ones" (as Haskell's givens
+  and Lean's local instances) this is an ambiguity error. Not specific to
+  D-2; to be decided in E-4.
+  REVISED 2026-11-04 (raised at H-2; plan (M1)): trailing instance
+  arguments are inserted only by spines checked in Check mode (`Check t`,
+  also when `t` is a meta); a spine in Infer mode inserts none (leading
+  `forall`s are still instantiated, as `instantiatePoly` does in Infer
+  mode). The rule depends only on the mode, not on the form of the
+  expression: Infer-mode `Abs` / `Let` / `Case` infer their bodies, which
+  therefore insert nothing either.
+    - Agda, checked in the source (master): `checkExpr` uses `ExpandLast`
+      (insert) and `inferExpr = inferExpr' DontExpandLast`
+      (`Rules/Term.hs:1732`); aliases `g = e` without sig (`isAlias`,
+      `Rules/Def.hs:147-179`) and `let x = e` without a type
+      (`Term.hs:1821-1830`) use `checkDontExpandLast`; pattern lets use
+      `inferExpr' ExpandLast`; `with` inserts only for data types. Agda
+      infers a lambda by checking it against a meta, so only neutral
+      terms stay in inference; this neutral / non-neutral split is a
+      consequence of Agda's modes and would be ad hoc in Sparcl, which has
+      genuine Infer rules for `Abs`, `Let`, `Case`. (M1) applies the
+      underlying principle -- insertion is driven by checking -- to
+      Sparcl's modes. Item 3 above ("from memory") is corrected by this.
+    - [SUPERSEDED by the fix (F1) below: `e1` / `e0` stay inferred, with
+      insertion.] `let p <- e1 in e2` is `(\p -> e2) e1` and
+      `case e0 of alts` is a
+      pattern-matching lambda applied to `e0`, so `e1` / `e0` are
+      arguments: they are now CHECKED against a fresh meta instead of
+      inferred (`inferTyM`, `Typing.hs:490, 573`), so trailing arguments
+      are inserted (e.g. the scrutinee of `case f 3 of ...` with
+      `f : Int -> {{C a}} -> T a`). Typing is otherwise unchanged (with a
+      meta expected type C-1 does not fire and subsumption just
+      instantiates and unifies).
+    - Sig-less `def`s stay checked against a meta (as now), so
+      `def g = elem` still needs a sig (E-2 unchanged); this differs from
+      Agda's alias rule, which exists because aliases are Agda's only
+      sig-less definitions.
+    - Infer-mode results may now carry an `InstFunTy` copied from a sig
+      (e.g. a REPL expression or an inferred head), consistent with A-4
+      (it comes from a signature; nothing is abstracted from goals).
+    - REPL (H-2): `:type elem` shows
+      `forall a. {{Eq a}} -> a -> List a -> Bool`.
+  PROBLEM found after the decision (tested 2026-11-04 with the current
+  checker, files in the scratchpad): with
+    sig ex0 : (forall x. x -> x) -> (Int, Bool)
+  `def t1 = let g <- ex0 in g (\y -> y)` and
+  `def t3 = case ex0 of g -> g (\y -> y) end` are accepted now (`e1` /
+  `e0` inferred, keeping the higher-rank type), while
+  `def t2 = (\g -> g (\y -> y)) ex0` is rejected (skolem escape: an
+  argument checked against a meta loses the higher-rank type).
+  Checking `e1` / `e0` against a fresh meta would make `t1` / `t3` fail
+  like `t2`. So the reading "`let p <- e1 in e2` is `(\p -> e2) e1`" holds
+  for trailing insertion but not for typing: Sparcl's `let` / `case`
+  accept more higher-rank programs than application.
+  FIX, plan (F1), decided 2026-11-04 (as Agda, whose pattern lets use
+  `inferExpr' ExpandLast`, `Term.hs:1854`; Agda's `ExpandHidden` flag is
+  independent of the mode): an "expand last" flag, always set in Check
+  mode and unset by default in Infer mode; a spine inserts trailing
+  instance arguments iff the flag is set (only the outermost spine;
+  subexpressions reset it by their own mode). `e1` of `let p <- e1` and
+  `e0` of `case e0 of` are INFERRED (as now) WITH the flag set. Typing of
+  `t1` / `t3` is unchanged (still accepted); only insertion is added, e.g.
+  for the scrutinee of `case f 3 of ...` with `f : Int -> {{C a}} -> T a`.
+  Not ad hoc: the flag is set where the value is matched against patterns
+  (used, not just bound or displayed), as Agda's pattern lets and `with`
+  (for data types). This replaces the "checked against a fresh meta"
+  bullet above. Rejected (F2): keep checking against a meta and reject
+  `t1` / `t3`.
+  Rejected (M2): all sig-less `def`s inferred (accepts `def g = elem` and
+  `def g x = elem`), a large change of `inferMutual` with order dependence
+  when several clauses are unified. Rejected earlier variants: copying
+  Agda's `isAlias` conditions, or splitting by neutral / non-neutral (both
+  ad hoc in Sparcl).
+- (D-3) [Amended by H-4-1: `Op` gets a field `XOp p`, `Void` at
+  `'TypeCheck`, so the typed AST cannot contain `Op`.]
+  `Op op e1 e2` is checked as a spine with head `Var op` and
+  arguments `[Explicit e1, Explicit e2]` by D-1 / D-2 (now: `instantiate`,
+  `ensureFunTy` twice, `Typing.hs:541`, which fails for
+  `(==) : forall a. {{Eq a}} -> a -> a -> Bool` since the instantiated type
+  starts with `InstFunTy`). The leading `{{Eq ?a}}` gets an inserted
+  application by the "InstFunTy / Explicit" row.
+  Result AST: the `Op` node has no room for inserted `InstArg`s (its first
+  field is only `XId`), so type checking always outputs
+  `App (App (Var (op, ty)) e1') e2'` (with `InstArg`s inserted when
+  needed), also when nothing is inserted: desugaring already turns `Op`
+  into `C.App (C.App (C.Var op) e1') e2'` (`Desugar.hs:117`), so the meaning
+  is unchanged, there is one code path, and only desugaring consumes the
+  typed `Op` (its `Op` case becomes unused but is kept).
+  Small difference: arguments are checked by `checkPolyTyM` (polytypes
+  allowed, as for applications) instead of `checkTyM ... (Check mono)`;
+  a generalization, nothing accepted now is rejected.
+  Operators that are constructors get their type by `askType`, as now.
+- (D-4) `Con` / `RCon` unchanged.
+    1. Constructors take no instance arguments: the arrows of a
+       constructor's own type are all `FunTy`, so a spine headed by
+       `Con` / `RCon` only uses the `FunTy` row of D-1 and nothing is
+       inserted; the head type is obtained by `askType` and instantiated,
+       as now.
+    2. GADT-style constructors with instance arguments
+       (`sig C : {{Eq a}} -> a -> T a`) stay rejected (future relaxation in
+       Renaming / PInst). Now the parser rejects them with the misleading
+       "A return type of GADT-style definition must be headed by the type
+       constructor." (`decomposeArrTy` decomposes only ordinary arrows);
+       a dedicated message is a TODO (parser change, not now).
+    3. `{{C}} -> t` as a field type is allowed (as Q1):
+       `data U a = MkU ({{Eq a}} -> a -> Bool)`; `MkU elem` checks `elem`
+       against the field type (C-1 inserts an abstraction, solving `elem`'s
+       goal), and a field `f` taken out by a pattern is applied with goals
+       inserted (D-1). Nothing extra is needed.
+    4. Q2 also applies to field types: `data U = MkU ({{Int}} -> Int)` is
+       accepted now (checked) and must be rejected. The Q2 check (G) covers
+       all user-written types: sigs, expression annotations, type synonyms
+       (after expansion), data field types, method sigs, instance types.
+- (D-5) No insertion when the current type of a spine (zonked) is a meta
+  variable: an explicit argument makes it a `FunTy` by `ensureFunTy`; an
+  `{{e}}` is an error (A-4); a meta left after the arguments gets nothing
+  (outside D-2). Plan (a): accepted, as a documented limitation.
+  Mostly order-independent, since an expected `InstFunTy` makes C-1 insert
+  at the use site, and D-1 / D-2 zonk at each step and insert once the
+  type is known; e.g. `(\f -> f 1 1) (==)` (D-2 inserts on the argument
+  `(==)`), and `\f -> ... f 1 ... k f ...` with
+  `k : ({{Eq Int}} -> Int -> Bool) -> ...` in either order (C-1 wraps `f`).
+  Order-dependent failure: an `InstFunTy` inside a type constructor that
+  reaches a meta by unification (A-2; types made writable by Q1):
+    sig fs : List ({{Eq Int}} -> Int -> Int -> Bool)
+    def fs = Cons (==) Nil
+    def t1 = case fs of Cons g _ -> g 1 2 end                -- OK
+    def t2 = (\xs -> case xs of Cons g _ -> g 1 2 end) fs   -- type error
+  In `t1` the pattern gives `g` its `InstFunTy` type first, so `g 1 2`
+  inserts. In `t2` the head abstraction is inferred first: `g : ?e` and
+  `g 1 2` fixes `?e := Int -> Int -> ?r` (`FunTy`); unifying with the type
+  of `fs` then fails (`InstFunTy` vs `FunTy`). Workarounds: an
+  annotation, or reordering (the `t1` form).
+  Rejected (b): postponing applications whose head type is a meta until it
+  is known (as Agda does); it needs managing suspended checks, including
+  multiplicity constraints and use maps, a large change to the checker.
+  (Lean / Agda also keep some order dependence of elaboration and reduce it
+  by postponement; from memory, not checked.)
+- (D-6) Flattening crosses `Parens` around the head: the head's `Parens`
+  is stripped and, if its contents is an `App`, flattened further;
+  otherwise (`Abs`, `Sig`, ...) the contents is the head, inferred by
+  `inferTy`. The typed AST is rebuilt without the head's parentheses
+  (desugaring ignores `Parens`). Consistent with C-1, which passes the
+  expected type through `Parens`. Unrelated to renaming's rejection of
+  `({{e}})`, which is about parentheses around an argument.
+  (The plan first recommended not crossing; revised.)
+  Crossing never rejects a program accepted without crossing. For
+  `(e0 a1 ... ak) b1 ... bm`:
+    1. `a1 ... ak` are processed identically (same head type, order, zonk
+       and rows; Infer mode of the inner part does not matter, since the
+       expected type is used only after the arguments and C-1 does
+       nothing in Infer mode).
+    2. At the boundary, without crossing the inner check ends with D-2
+       (instantiate leading foralls, insert leading `InstFunTy`s) and
+       `instantiatePoly rest (Infer ref)` (shallow `instantiate`). With
+       crossing, if `b1` is explicit, the `TyForAll` and
+       `InstFunTy / Explicit` rows do the same operations in the same order
+       until `FunTy` / meta, reaching the same type; if `b1` is `{{e}}`,
+       without crossing the rest no longer starts with `InstFunTy`, so every
+       row rejects it: no program accepted without crossing is affected,
+       and crossing may accept it (`(f x) {{d}}`, `(elem) {{eqNat}} z zs`).
+    3. `b2 ...` follow from the same type.
+    4. Use maps: head not raised, arguments raised by their arrows'
+       multiplicities, merged associatively.
+    5. `inferTy` neither regathers constraints nor generalizes
+       (`Typing.hs:395`).
+    6. Same left-to-right order, so metas are fixed in the same order (D-5).
+  Only error locations (`atExp` / `atLoc` contexts) and the typed AST
+  (no head `Parens`) differ. NB: this argument relies on D-1 / D-2 as
+  decided; re-check it if they change (e.g. postponement for D-5).
+
+Instance search
+---------------
+
+- (E-1) Postponed goals. An application inserted by D-1 / D-2 usually has
+  metas in its goal (`Eq ?a` in `elem x xs` is fixed by the later `x`), so
+  goals are recorded and solved later.
+    1. TCMonad.hs:
+         data Goal = Goal
+           { goalId     :: Name             -- for messages / debug output
+           , goalRef    :: IORef (Maybe (LExp 'TypeCheck))
+                                            -- the hole in the AST (F-3)
+           , goalTy     :: Ty               -- class type, may contain metas
+           , goalLocals :: [(Name, Ty)]     -- tcLocalInsts at creation (B-3)
+           , goalLevel  :: TcLevel          -- tcTcLevel at creation (E-2)
+           , goalCtx    :: TypeErrorContext -- for error messages
+           }
+       `goalLocals` keeps the scope of creation, so a goal solved later is
+       searched in the right scope (B-3 (5)).
+    2. `TypingContext` gets `tcGoals :: !(IORef [Goal])`, appended on each
+       insertion and emptied by `refreshTC` like the other IORefs.
+    3. `gatherGoals :: TC a -> TC (a, [Goal])`, shaped like
+       `gatherConstraint` (save, collect the new goals, restore), delimits
+       the goals of a definition (where they are solved, E-2) and is used to
+       put unsolved ones back into the outer list.
+    4. (Amended by F-3 (b), 2026-11-04.) A solved goal's dictionary
+       expression (e.g. `eqList {{eqNat}}`) is written to its `goalRef`;
+       the earlier `tcGoalSols :: IORef (Map Name (LExp 'TypeCheck))` in
+       `TypingContext` is dropped.
+    5. Not mixed with `tcConstraint` (`InferredConstraint`s: multiplicity
+       and type equalities, solved by the SAT solver); instance goals are
+       solved quite differently (matching candidates, recursive search).
+- (E-2) When goals are solved, and generalization.
+  Found: Sparcl does not generalize local `def`s without sig
+  (`tryGeneralizeTy`, `Typing.hs:695`: zonk only unless top level); only
+  top-level sig-less `def`s are generalized.
+  Goals are solved in `inferMutual` after the bodies of a group are
+  checked, before generalization (the next top-level group uses the
+  generalized type) and before solving multiplicity constraints
+  (instantiating a candidate may add constraints): the group's goals are
+  collected by `gatherGoals`, zonked and searched (E-3, E-4). Unsolved:
+    no metas and no candidate                -> error "no instance"
+    local group (not generalized), metas     -> put back into the outer
+                                                list (outer uses may fix
+                                                the metas)
+    top-level sig-less def, metas that would -> error, plan (a): instance
+      be generalized                            arguments are not inferred;
+                                                write a sig
+    top-level def with sig, metas left       -> error "ambiguous" (nothing
+                                                outside can fix them)
+    anything left after a top-level group    -> error
+  E.g. `let def same y z = y == z in same 1 2`: `Eq ?b` from `same` is
+  postponed outward and solved after `same 1 2` gives `?b = Int`; no sig
+  needed.
+  Rejected for top-level sig-less defs: (b) adding `{{Eq a}} ->` and
+  generalizing (Haskell's constraint inference; infers instance arguments,
+  against A-4 / C-4 / D-2); (c) not generalizing those variables (like
+  Haskell's monomorphism restriction): at top level there is no outside,
+  so the first use in a later group would fix the type, depending on
+  definition order, and still an error if never fixed. Lean / Agda do not
+  add implicit arguments to top-level definitions by inference (from
+  memory, not checked).
+  Consequences: all sig-less defs of the samples solve their goals in
+  place (checked at C-4); `def g = elem` needs a sig (D-2).
+- (E-3) Search for a zonked goal `C ts` with the goal's local instances
+  (E-1) and the instance table (B-2).
+    1. Candidates:
+       (i)   local instances `d : C ss` (dictionary `Var d`);
+       (ii)  superclasses of local instances: `d : Ord t` gives `Eq t`,
+             transitively and for every class in `extends` (on demand,
+             within the depth limit of 3; amended by G-2); dictionary
+             `proj_{Ord,0} d`, where projections are global functions with
+             `System` names (users cannot write them), one per class and
+             superclass index, whose values are made by desugaring (H-4);
+             this realizes Renaming (d)'s "superclass field names are
+             generated later";
+       (iii) global instances of class `C` in the instance table, of type
+             `forall as. {{H1}} -> ... -> {{Hk}} -> C us`.
+    2. A global candidate is instantiated with fresh metas and its head
+       `C us` matched with `C ts` (matching rule: E-4); on success
+       `H1 ... Hk` are solved recursively as goals under the same local
+       instances. Dictionary: `inst {{e1}} ... {{ek}}`, i.e.
+       `App (Var inst) (InstArg e1) ...` in the typed AST, the same shape as
+       insertions by D-1.
+    3. A depth limit (e.g. 32) on the recursion; exceeding it is an error
+       "instance search too deep (possibly cyclic instances)", e.g. with
+       `instance {{Eq (List a)}} -> Eq a`.
+       (Amended by G-2, 2026-11-04.) The limit counts both the recursion
+       on subgoals of global candidates and each projection step of (ii),
+       with one shared bound, so search also stops with cyclic
+       superclasses (`class A a extends B a`, `class B a extends A a`,
+       which give `B a`, `A a`, `B a`, ... from `{{A a}}`) and with
+       growing ones (`class A a extends A (List a)`, where a visited set
+       would not help).
+    4. Superclasses of global instances are not followed (as Haskell): a
+       goal `Eq Int` is not solved by projecting the global `Ord Int`. G
+       checks, when registering a global instance, that its superclass
+       instances are solvable, so `Eq Int` is found directly; following
+       projections too would give a second candidate and spurious
+       ambiguity. (Lean registers `extends` projections as instances and
+       follows them; from memory, not checked.)
+    5. Several matching candidates are E-4: local and global (`{{Eq Int}}`
+       of D-2), locals overlapping (`{{Ord a}} -> {{Eq a}} -> ...` gives
+       `Eq a` directly and by projection), and globals overlapping.
+- (E-4) Matching and several candidates (all as recommended).
+    (1) One-way matching: only the candidate's type variables may be
+        instantiated, never the goal's metas; a goal that cannot be decided
+        because of metas is "stuck" (postponed). `Eq (List ?a)` matches
+        `eqList`'s head `Eq (List a)` with `a := ?a`, so it is committed and
+        the subgoal `Eq ?a` postponed; `Eq ?a` unifies with almost every
+        global head but matches none one-way, so it is postponed. Stuck
+        goals at the solving point follow E-2's table (postponed outward or
+        "ambiguous"). Why: metas fixed by search cannot be undone if later
+        checking disagrees; Haskell also waits for the goal to be
+        instantiated before choosing.
+    (2) Local over global: if any local candidate (projections included)
+        matches, globals are not considered
+        (`sig f : {{Eq Int}} -> Int -> Bool; def f x = x == x` uses the
+        argument). As Haskell's givens and Lean's local instances.
+    (3) Several locals: not an error; a fixed order picks one: direct local
+        instances before projections; within a kind, the innermost (most
+        recently bound) first (as Lean). E.g.
+        `sig h : {{Ord a}} -> {{Eq a}} -> ...` uses the direct `Eq a`.
+        Rejecting it would reject ordinary code. NB: since `{{e}}` can pass
+        different dictionaries explicitly, the candidates need not agree
+        (incoherence); the choice is by this fixed rule.
+    (4) Global overlap, two stages:
+          - at declaration (G-1): a head of an instance declared in the
+            module that unifies (after renaming type variables apart) with
+            the head of any visible instance (own or imported) is an error;
+          - at use: overlaps from different modules (B-4: `A.eqNat`,
+            `B.myEqNat`) cannot be seen at declaration; two matching global
+            candidates at a use site are an ambiguity error (as Haskell).
+            Not detected when tables are merged, which would reject merely
+            importing both.
+        REVISED 2026-11-04 (G-3, plan (A), as Agda): no check at
+        declaration; overlapping instances may be declared, and overlap is
+        handled only by search. Since the declaration check was what made
+        committing by one-way matching safe in (1) (with `Eq (List a)`
+        and `Eq (List Int)` both declared, committing `Eq (List ?a)` to the
+        former would be wrong once `?a := Int`), the decision rule of (1)
+        becomes (metas of the goal are still never instantiated):
+          L. Locals (with projections): if some match one-way, pick one by
+             (3). Else, if some unify with the goal, the goal is stuck
+             (one may match once metas are fixed). Else go to G.
+          G. Globals: U = the candidates whose head unifies with the goal
+             (type variables renamed apart; only definite mismatches are
+             excluded, as Agda; skolems are rigid).
+               |U| = 0                      -> `NoInstance`
+               |U| = 1, matches one-way     -> commit; subgoals (E-3 2)
+               |U| = 1, does not match      -> stuck (needs goal metas)
+               |U| >= 2, goal has metas     -> stuck
+               |U| >= 2, goal has no metas  -> `AmbiguousInstances`
+          Stuck goals follow E-2's table (postponed outward; at top level
+          `AmbiguousGoal`). E.g. with only `eqList`, `Eq (List ?a)` is
+          committed as before; with `Eq (List Int)` also declared it is
+          stuck until `?a` is known; `Eq (List a)` with a skolem `a` is
+          committed to `eqList` (`Int` vs skolem is a definite mismatch);
+          `Eq (List Int)` is `AmbiguousInstances`.
+        Overlap is reported only when a use hits both instances; merely
+        declaring or importing them is fine (as Agda). Rejected (B), Lean
+        style: priorities and "most recent first" with backtracking, no
+        ambiguity error; it needs priority syntax, an order of instances
+        across modules (B-4 tables are `Map`s), backtracking in E-3, and
+        the choice would depend on declaration / import order. A way to
+        prefer more specific instances (as Agda's `OVERLAPPING` pragmas)
+        may be added later.
+        Head arguments (I4, second half): no restriction besides renaming's
+        "every type variable occurs in the head" (as Agda / Lean; Haskell
+        98's `C (T a1 ... an)` is not imposed); non-terminating search is
+        stopped by E-3's depth limit.
+- (E-5) New `ErrorDetail` constructors (now: `UnMatchTy`, `Escape`, ...,
+  `Other Doc`; `TCMonad.hs:59`):
+    NoInstance Ty                    no metas, no matching candidate (E-2)
+    AmbiguousInstances Ty [Name]     several globals unify with a goal
+                                     without metas (E-4 (4), revised)
+    AmbiguousGoal Ty                 metas left that can no longer be fixed
+                                     (e.g. top-level def with sig; E-2);
+                                     "add a type annotation"
+    CannotInferInstArg Ty            top-level sig-less def with a
+                                     polymorphic goal (E-2 (a)); "write a sig"
+    InstSearchTooDeep Ty             depth limit (E-3)
+    NotInstArgPosition               `{{e}}` / `{{p}}` at a `FunTy` (D-1, C-2)
+    InstArgUnknownFun                `{{e}}` to a function of unknown type
+                                     (D-1, A-4)
+    InstPatNeedsAnnotation           `{{p}}` where the type is unknown
+                                     (C-2, C-4)
+    NotAClass Ty                     non-class in `{{ }}`, instance head,
+                                     instance argument, superclass (Q2, G)
+    ClassArityMismatch Name Int Int  wrong number of class arguments, inside
+                                     or outside `{{ }}` (Q2, B-1)
+    NotAMethod Name Name             a `def` in an instance body that is not
+                                     a method of its class (G)
+    MissingMethod Name Name          a method without default not defined (G)
+  Notes:
+    1. A missing superclass instance (`Eq T` for `Ord T`) is `NoInstance`
+       with a new `WhenChecking` context "checking the superclasses of
+       instance X" (`pprWhenChecking`).
+    2. Goal errors are reported with the goal's creation context
+       (`goalCtx`, E-1), pointing at the inserted application even when
+       solved later.
+    3. "Cannot happen" errors (`InstArg` in H-1, `Infer` in C-3) are not
+       `ErrorDetail`s; plain `error "Cannot happen."` as now.
+    4. Nonexamples tests only check that a `StaticException` is raised, so
+       the split is for messages, not for tests.
+
+Typed AST of inserted forms
+---------------------------
+
+- (F-1) Inserted forms use the existing constructors, except the hole
+  `InstHole` of F-3 standing for a goal's dictionary.
+    1. Inserted abstraction (C-1):
+         Abs [Loc l (PInst (Loc l (PVar (d, c))))] e'
+       `d` is `Generated i TypeChecking`, `c` the class type
+       (`XId 'TypeCheck = (Name, Ty)`).
+    2. Pattern inserted in a clause (C-2, `Inserted c`): the same
+       `PInst (PVar (d, c))` at the corresponding position of the pattern
+       list.
+    3. Inserted application (D-1, D-2):
+         App f (Loc l (InstArg (Loc l (InstHole ref))))
+       `InstHole ref` stands for the goal and is filled after solving (F-3).
+    4. Dictionary expressions built by search (E-3):
+         local instance        Var (d, c)
+         global instance       App (Var (inst, ty)) (InstArg sub) ...
+         superclass projection App (Var (proj, ty)) (Var (d, c))
+       A projection is an ordinary function (`Ord a -> Eq a`), applied
+       without `InstArg`.
+    5. Operators (D-3): rebuilt as `App (App (Var (op, ty)) e1') e2'`;
+       inserted `InstArg`s go into this application chain.
+    6. Inserted forms are not distinguished from user-written ones
+       (`\{{d}} -> e`, `def f {{d}} ...`, `f {{e}}`), so desugaring (H-4)
+       has a single case for each.
+    7. Locations: an inserted abstraction gets the location of the
+       expression it wraps; an inserted application gets the span from the
+       head to that argument. Runtime errors and desugared output can then
+       point at the source.
+- (F-3) Filling in dictionary expressions: plan (b), a hole with an IORef.
+    1. Surface.Syntax gets a type family and a constructor:
+         type family XHole (p :: Pass) where
+           XHole 'Parsing   = Void
+           XHole 'Renaming  = Void
+           XHole 'TypeCheck = IORef (Maybe (LExp 'TypeCheck))
+         | InstHole !(XHole p)    -- dictionary of a goal (made by D-1 / D-2)
+       Only the type checker makes it; parsing and renaming never see it
+       (`absurd` / "cannot happen" in their cases).
+    2. Each inserted application (D-1, D-2) creates a fresh ref, puts
+       `InstArg (InstHole ref)` in the AST and records it as `goalRef` of
+       the goal (E-1). When the goal is solved (E-2, E-3), the dictionary
+       expression (F-1 4) is written to the ref. Subgoals of E-3 are solved
+       on the spot, so dictionary expressions themselves contain no holes.
+    3. Desugaring (H-4) reads the ref (`lift`, as `zonkType`) and desugars
+       its contents; an empty ref is "cannot happen" (E-2 reports unsolved
+       goals as errors before desugaring).
+    4. Pretty printing shows the contents if filled and `?g_k` (`goalId`)
+       otherwise, reading the ref by `unsafePerformIO` as metas are printed
+       (`Type.hs:260`).
+    5. A goal postponed outward (E-2) needs nothing special: the ref is
+       carried by the goal.
+  Why: this is how meta type variables are handled. Their solutions are
+  in the IORef of each `MetaTyVar` (`metaRef`, `Type.hs:249-256`), carried
+  by the types in the typed AST, and desugaring reads them by `zonkType`.
+  Results of type checking reach desugaring only through the output (AST,
+  return values): `Module.hs` type-checks with `execTCWith`, whose
+  context `tc'` (made by `refreshTC` at the start of each type-checking
+  run, so that constraints and errors of one input do not leak into the
+  next) is local to it, and then desugars with the outer `tc` by
+  `execTC` (`Module.hs:500-507`). (That desugaring does not use `tc'` is
+  a consequence of how `Module.hs` calls them, not of the refresh; it is a
+  latent bug, see "TODO / known issues".) A solution table in
+  `TypingContext` would therefore not be visible to desugaring.
+  Rejected: (a) `Var (g_k, c)` plus substituting solutions over the whole
+  typed AST at the end of `inferTopDecls` (no such traversal exists; it
+  would need updating for every syntax change; H-2 must call it too);
+  (c) `Var (g_k, c)` plus returning the solution table from
+  `inferTopDecls` and passing it to desugaring (workable, but the typed
+  AST alone would not determine the dictionaries, and goal names
+  `Generated i TypeChecking` restart per input, so keys need care).
+  (Running desugaring inside the same `execTCWith` would also make a table
+  in `tc'` visible; not needed with (b).)
+
+Registration and checks of class / instance declarations (G)
+-------------------------------------------------------------
+
+G-1 order, G-2 classes, G-3 instances, G-4 Q2 / arity checks on
+user-written types, G-5 default methods and instance bodies.
+Already checked by renaming (not repeated here): duplicated methods,
+defaults only for methods of the same class, the shape of instance types,
+every type variable of an instance occurring in its head.
+
+- (G-1) Order in `inferTopDecls` (now: data types and synonyms, then
+  `inferDecls True decls`; classes / instances rejected by `staticError`,
+  `Typing.hs:847-883`). Principle: register all type information first,
+  check expressions afterwards, so declarations can refer to each other
+  regardless of their order.
+    1. Data types and type synonyms (`withCons`, `withSyns`), as now:
+       method sigs and instance types use them.
+    2. Classes (G-2): `ClassInfo` (B-1), checks; method types (B-5) and
+       superclass projections (E-3) into `tcTyEnv`. Before instances,
+       whose heads refer to classes.
+    3-a. Instances (G-3 1, 2): checks decided by types only (head is a
+       class, arity, Q2; no overlap check, E-4 (4) revised); registered
+       in the instance table (B-2,
+       merged with imported ones, B-4) and in `tcTyEnv`. Before `def`s,
+       whose goals are solved with the table.
+    3-b. Superclass instances solvable (G-3 3): needs all instances
+       registered (a later `Eq Nat` for an earlier `Ord Nat`), but no
+       `def` types.
+    4. `def`s (`inferDecls True decls`, as now).
+    5. Default methods and instance bodies (G-5), under `withVars` of the
+       `def` types from 4: a body may call a sig-less top-level `def`,
+       whose generalized type is known only after 4. The converse never
+       happens: a `def` depends only on method types, fixed by class sigs.
+    6. Results: typed bodies, the class table and the instance table are
+       added to the return value of `inferTopDecls` (for desugaring, H-4,
+       and the module tables, B-4; exact shape in H-4).
+  Example: `def main = elem 1 (Cons 2 Nil)` before the instances;
+  `instance ordNat : Ord Nat` before `instance eqNat : Eq Nat`, whose body
+  uses a sig-less `def eqN` declared after it. 2 registers `(==)`; 3-a
+  registers both instances; 3-b solves `Eq Nat` by `eqNat`; 4 checks
+  `main` (its goal is solved with the complete table) and generalizes
+  `eqN`; 5 checks the body of `eqNat` with `eqN`'s type visible.
+  Notes: G-4 checks are done where types occur (start of 2, once the
+  class table exists: data fields; 2: superclasses, method sigs; 3-a:
+  instance types; 4, 5: sigs and annotations met while checking), not in
+  one pass. Errors in bodies are found after errors in
+  `def`s; since errors are accumulated and printed together (`runTC`),
+  only the printed order differs.
+- (G-2) Class declarations (stage 2 of G-1).
+    1. `ClassInfo` (B-1) is built for all classes of the module first and
+       merged with the imported class table (B-4); then the checks below.
+       So `class A extends B` may refer to a later `B`.
+    2. Superclasses `extends S1, ..., Sm`, each `S ts`: `S` must be a class
+       (`NotAClass`, e.g. `extends List a`) with the right number of
+       arguments (`ClassArityMismatch`, e.g. `extends Eq a a`).
+    3. Cycles in the superclass hierarchy are NOT detected; they are
+       allowed (like GHC's `UndecidableSuperClasses`). Cycle detection was
+       meant to keep instance search from running forever, which the
+       depth limit of E-3 3 already guarantees once it also counts
+       projection steps (E-3 amended). With a cycle `class A a extends
+       B a`, `class B a extends A a`: superclass checks of global
+       instances (G-3) succeed by finding each other in one step;
+       candidates from projections that duplicate direct ones are ordered
+       by E-4 (3); global dictionaries become mutually recursive values,
+       which top-level evaluation by `rec` (MonadFix, `Eval.hs:29-36`)
+       probably handles -- to be confirmed in H-4. `SuperclassCycle` is
+       removed from E-5.
+    4. Each method sig: G-4 check, then the global type of B-5,
+       `forall as bs. cs => {{C as}} -> t`, into `tcTyEnv` (e.g.
+       `(==) : forall a. {{Eq a}} -> a -> a -> Bool`). For each
+       superclass, a projection `proj_{C,i} : forall as. C as -> Si`
+       (ordinary arrow, Omega; `System` name, not writable by users; e.g.
+       `proj_{Ord,0} : forall a. Ord a -> Eq a`) into `tcTyEnv` (E-3); its
+       value is made by desugaring (H-4).
+    5. (I4, first half) A method sig in which some class parameter does
+       not occur (also when hidden by an explicit `forall`) is allowed,
+       plan (b) (as Agda / Lean, where class fields are ordinary
+       functions):
+         class Sized a where
+           sig size : Int
+           sig k    : forall a. a -> a
+         end
+       `size : forall a. {{Sized a}} -> Int`; an implicit use gives a goal
+       `Sized ?a` that nothing determines, so it is `AmbiguousGoal`
+       (one-way matching, E-4 (1)); it is usable only with an explicit
+       instance, `size {{sizedNat}}`. Documented as a limitation.
+       Rejected (a): an error at the class declaration (Haskell 98; GHC
+       allows it only with `AllowAmbiguousTypes`). No current sample has
+       such a method (`Convert a b`'s `convert : a -> b` mentions both),
+       so neither plan affects them.
+- (G-3) Instance declarations `instance x : forall as. {{H1}} -> ... ->
+  {{Hk}} -> C ts` (shape already checked by renaming; stages 3-a / 3-b
+  of G-1).
+    1. (3-a) After synonym expansion (G-4): the head's `C` must be a class
+       (`NotAClass`, e.g. `instance : List Int`) with the right number of
+       arguments (`ClassArityMismatch`, e.g. `instance : Eq Int Int`); the
+       same for each `Hi` (Q2). Kinds of the arguments of higher-kinded
+       classes are not checked (plan alpha).
+    2. No overlap check at declaration (E-4 (4) revised, plan (A)).
+    3. (3-b) Superclass instances solvable: skolemize `as`, give
+       `H1 ... Hk` as local instances named `d1 ... dk`
+       (`Generated i TypeChecking`), and solve each superclass `Si[ts]` of
+       `C` by E-3 with the revised E-4 rule. The goals have no metas, so
+       nothing is postponed: no candidate -> `NoInstance` with the context
+       "checking the superclasses of instance x" (E-5 note 1); several ->
+       `AmbiguousInstances`. E.g. `instance ordList : {{Ord a}} -> Ord
+       (List a)` solves `Eq (List a)` by `eqList {{proj_{Ord,0} d1}}`;
+       `instance ordT : Ord T` without an `Eq T` instance is
+       `NoInstance (Eq T)`. The dictionary expressions are kept per
+       instance together with `d1 ... dk` and returned (G-1 6) for
+       building the superclass fields of dictionaries (H-4).
+    4. (3-a) Registration in the instance table (B-2) and `tcTyEnv`, also
+       for an instance that failed 1 (avoids cascades of `NoInstance` at
+       its uses; the recorded error still fails type checking). 3-b runs
+       after all instances are registered (G-1).
+- (G-4) Q2 and class-arity checks on user-written types.
+    Found: synonyms are not expanded when sigs are converted (`ty2ty`);
+    `resolveSyn` (`TCMonad.hs:668`) expands them during unification,
+    giving `TySyn orig expanded`, and already reports "Type synonym ...
+    must be fully-applied". User-written types enter at: annotations
+    (`Typing.hs:510`), top-level and local sigs (`sigMap` in
+    `inferMutual`, `Typing.hs:901`), data constructor fields (normal and
+    GADT, `Typing.hs:879-891`), synonym bodies (`Typing.hs:862`); new:
+    superclasses, method sigs, instance types.
+    1. `checkClassTypes :: Ty -> TC ()`: `resolveSyn` first, then traverse
+       (looking at the expanded side of `TySyn`):
+         - `{{T}}` (`TyCon nameTyInstArr [T, t]`): `T` must be `TyCon C ts`
+           with `C` in the class table (B-1), else `NotAClass T`
+           (`{{Int}}`, `{{a}}`, `{{Int -> Int}}`);
+         - every occurrence of a class name, inside or outside `{{ }}`,
+           must have exactly its arity of arguments, else
+           `ClassArityMismatch C expected actual` (`Eq Int Int -> Bool`,
+           `Eq -> Int`, `T Eq`); classes are ordinary types (Q1) but
+           there is no `Constraint` kind (I1), so an unapplied class is
+           not a type argument;
+         - nothing else (data type arity, kinds) is checked, as now
+           (plan alpha).
+       Errors are located at the written type (the `Loc` of the sig,
+       annotation, field, ...).
+    2. Where:
+         superclasses (G-2 2), method sigs (G-2 4)   G-1 stage 2
+         data constructor fields (normal, GADT)      start of stage 2, as
+                                                     soon as the class
+                                                     table exists (fields
+                                                     may contain class
+                                                     types, Q1)
+         instance types (G-3 1)                      stage 3-a
+         top-level and local sigs                    building `sigMap` in
+                                                     `inferMutual`
+                                                     (stages 4, 5)
+         annotations `(e : T)`                       `Sig` case of
+                                                     `checkTy` (4, 5,
+                                                     REPL)
+       The class table only needs `ty2ty` of method sigs, so it can be
+       built before the field checks. Imported types and sigs were
+       checked in their own modules.
+    3. Synonyms are checked where used, after expansion; their bodies are
+       not checked at definition, since validity may depend on the
+       arguments (`type S a = {{a}} -> Int`: `S (Eq Int)` fine, `S Int`
+       not). An invalid synonym that is never used is not reported, as
+       with the existing "must be fully-applied" check at use sites.
+    4. No effect on existing samples: their types contain no classes.
+- (G-5) Default methods and instance bodies (stage 5 of G-1).
+    Found: the sig branch of `inferMutual` (`Typing.hs:917-923`,
+    `939-965`) skolemizes, aligns patterns (`ensureFunTyN`, to become
+    `alignPatsTy`, C-2), checks the clauses, solves the multiplicity
+    constraints at top level and checks escapes; but `inferMutual` first
+    binds the defined names to their sig types by `withVars`
+    (`Typing.hs:908`).
+    1. That sig branch is factored out as `checkSigDef :: Loc -> Name ->
+       PolyTy -> [Clause] -> TC ...`, used by `inferMutual` (no change of
+       behaviour) and for method bodies, the latter WITHOUT binding the
+       name: in a body, `(==)` refers to the global method (Renaming
+       DInst (c) 3), e.g. `l1 == l2` in the body for `Eq (List a)`;
+       binding it would give the call the instance-specific type, which
+       disagrees with the global method used by desugaring. Goals are
+       solved right after each body (E-2, "top level with sig").
+    2. A default method `def m = e` of `class C as` is checked against the
+       global type of `m`, `forall as bs. cs => {{C as}} -> t` (B-5);
+       after skolemization C-1 (or C-2, `Inserted`, with patterns) gives
+       `d : C as` as a local instance, so goals `C as` of other methods and
+       of `m` itself are solved by `d` (local first, E-4). E.g.
+       `def (/=) x y = not (x == y)` becomes
+       `\{{d}} x y -> not ((==) {{d}} x y)`.
+    3. For `instance x : forall as. {{H1}} -> ... -> {{Hk}} -> C ts`, a
+       body `def m = e`: if `m` is not a method of `C`, `NotAMethod x m`
+       (renaming resolves the name but does not check this); else it is
+       checked against
+         forall as bs. cs[ts] => {{H1}} -> ... -> {{Hk}} -> t[ts/params]
+       without `{{C ts}}` (the body implements it); the `Hi` become local
+       instances by C-1 / C-2. The `bs` are renamed apart first: both
+       sides are named by `Alpha` indices and may clash (`class C a` with
+       `sig m : forall b. ...` has `b = Alpha 1`, and so has `y` in
+       `instance {{Eq x}} -> {{Eq y}} -> C (Pair x y)`). Uses of the same
+       class in the body find the registered global `x` itself (e.g.
+       `xs == ys` in the body of `eqList` is `eqList {{d1}}`; elements
+       `y == z` use the local `d1 : Eq a`).
+    4. A method of `C` with neither a body nor a default is
+       `MissingMethod x m`. Omitted methods with defaults are recorded
+       and returned, so that desugaring fills them by applying the
+       default to the instance's own dictionary (H-4).
+    5. Errors are independent per body (accumulated by `reportError`, as
+       now); bodies are checked in declaration order, which only affects
+       the order of the printed errors.
+    Self-reference (2 and 3 are consistent): both allow a body to use the
+    methods of its own class, and both make dictionary definitions
+    recursive; only the route differs. A default does not know which
+    instance will use it, so it takes the dictionary as `{{C as}}` (filled
+    with the instance's own dictionary by H-4); an instance body already
+    has its dictionary as the global `x`, so no parameter is needed.
+    Sketch of the desugared result (H-4 decides the details):
+      eqNat    = DictEq (\x y -> eqN x y) (dflt_neq eqNat)
+      dflt_neq = \d -> \x y -> not (proj_(==) d x y)
+    Recursion must be allowed: forbidding it rejects ordinary code (the
+    default `(/=)` via `(==)`, recursive `Eq (List a)`), and Haskell's
+    dictionaries are recursive in the same way. The evaluator should
+    handle it: top-level bindings use `rec` (MonadFix, `Eval.hs:29-36`)
+    over the lazy `Eval = Reader Int` (`Value.hs:24`); `Con` builds fields
+    lazily and `App` forces only the function, so `dflt_neq eqNat` returns
+    a closure without forcing `eqNat` (not run yet; confirm in H-4 with
+    the G-2 cycle case). Only a self-dependent non-function method (e.g.
+    `def mempty = mappend mempty mempty`) loops, like a self-dependent
+    top-level `def`.
+
+Remaining parts (H)
+-------------------
+
+- (H-1) Impossible cases in `checkTy` (under the expression revision (c),
+  "Representation"):
+    1. There is no `InstArg` case: `InstArg` is a constructor of `Arg`,
+       not of `Exp`. `App f a` is handled by the spine (D-1), whose
+       arguments `[Arg]` are processed from the left; `InstArg e` is the
+       `Inst e` row of D-1's table. (The earlier proposal "`go (InstArg _)`
+       is cannot-happen" is no longer needed.)
+    2. `go (InstHole v) = absurd v`, since `XHole 'Renaming = Void` (F-3);
+       guaranteed by the type, not a run-time "cannot happen".
+    3. Patterns: with `PInst` as now (the `ArgPat` revision is on hold,
+       TODO), C-3's `go (PInst p)` is used at argument positions; other
+       positions and contents other than a variable / `_` are rejected by
+       renaming (`checkInstPatArg` / `checkNoInstPat`), so the type checker
+       does not check them. Revisit when the pattern question is decided.
+- (H-2) REPL (evaluation and `:type`; both go through `readExp`,
+  `Module.hs:392-433`, i.e. `inferExp` -> `inferPolyTy True`, Infer mode
+  and generalization).
+    1. `readExp`'s `execTCWith` also gets `mcClassTable` / `mcInstTable`
+       (B-4; the same `setEnvs` extension as B-1 / B-4), otherwise goals of
+       methods used in a REPL expression cannot be solved.
+    2. In `inferPolyTy` the inference is wrapped by `gatherGoals` and the
+       goals are solved before `generalizeTy`, as for a top-level sig-less
+       definition (E-2): goals with generalizable variables are
+       `CannotInferInstArg`, leftovers are errors. E.g.
+       `elem 1 (Cons 1 Nil)` solves `Eq Int`; `\x -> x == x` (the body
+       inserts a leading instance argument, since arguments follow) leaves
+       a polymorphic `Eq ?a`, `CannotInferInstArg`.
+    3. A REPL expression is in Infer mode, so its outermost spine inserts
+       no trailing instance arguments (D-2 (M1)): `:type elem` shows
+       `forall a. {{Eq a}} -> a -> List a -> Bool`; evaluating `elem` gives
+       a function value expecting a dictionary; `:type (==) {{eqNat}}`
+       shows `Nat -> Nat -> Bool`.
+    4. Desugaring runs later as `eComp`; dictionaries are in the
+       `InstHole` refs of the AST (F-3 (b)), so the context-sharing issue
+       (TODO) does not affect it.
+- (H-3) `rev` contexts (checked against `Examples-Class/Invertible.sparcl`:
+  `rev` / linear method types, `rev` patterns and `with` in instance
+  bodies, `# Omega` methods, a local instance used twice, `fwd` / `bwd`
+  via `unlift`). No special treatment for `rev`:
+    1. Dictionaries are always ordinary (non-`rev`) values: instance
+       arrows are Omega (A-1), `{{rev x}}` is rejected by renaming, and
+       local instances are removed from use maps (C-1, C-3), so linearity
+       checking is unaffected (`twice` uses its `d` twice).
+    2. Clauses with `rev` patterns align by C-2: in the body of
+       `instance {{RevSucc a}} -> RevSucc (List a)`,
+       `def rsucc (rev Nil) = rev Nil with isNil` against
+       `{{RevSucc a}} -> rev (List a) -o rev (List a)` gives `Inserted`,
+       then `Explicit`; the rest `rev (List a)` satisfies `ensureRevTy`
+       (`hasPRev`) and `with`'s `expectRevTy`. An instance argument after
+       the explicit ones (`... -> {{C a}} -> rev T` with `with`) is C-2's
+       documented limitation (workaround `{{_}}` on the left-hand side).
+    3. `fwd twice (S Z)`: `twice` is checked against `rev ?a -o rev ?b`
+       (Check mode, trailing insertion `twice {{?g}}`, D-2); `?a := Nat`;
+       `RevSucc Nat` by `revSuccNat`. `fwd rsucc (Cons Z ...)` solves
+       `RevSucc (List Nat)` by the unnamed instance with subgoal
+       `RevSucc Nat`. `t9` passes `{{revSuccNat}}` explicitly.
+    4. Evaluation: applying / projecting dictionaries is static (forward)
+       computation, evaluated alike in both directions of `unlift`; a
+       projected method is used in `rev` code like a global function
+       (like `radd x y` with a static argument). To be confirmed after H-4.
+    5. `rev ({{C a}} -> t)` is not restricted, as `rev` of function types
+       is not restricted now.
+- (H-4) Desugaring, split into H-4-1 expressions and patterns, H-4-2
+  dictionary representation, H-4-3 methods and superclass projections,
+  H-4-4 instance values, H-4-5 top level and module value tables.
+  Found: `desugarTopDecls` makes one `(name, type, exp)` binding per `def`
+  (`Desugar.hs:377-383`), evaluated as one recursive group (`rec`); Core
+  has `Con`, `Case`, recursive `Let`, `WTup` and `WProj i n`
+  (`Core/Syntax.hs:25-40`).
+- (H-4-1) Expressions and patterns.
+    1. `App f a` (expression revision (c)) becomes
+       `C.App f' (desugar (argExp a))` for both kinds of `Arg`:
+       dictionaries are ordinary arguments at run time.
+    2. `InstHole ref`: read the ref (`lift`, as `zonkType`) and desugar its
+       contents; an empty ref is `cannotHappen` (E-2 reports unsolved
+       goals before).
+    3. `PInst (PVar x)` (written or inserted) is the variable pattern `x`:
+       `PInst p` is replaced by `p` before `makeTuplePatS` in `desugarRHS`
+       and in `checkAllVars` of `Abs` (`Desugar.hs:71-75`); `{{_}}` is a
+       named `PWild`, an ordinary wildcard. With `ArgPat` (TODO) this is
+       the conversion `ArgPat` -> `LPat`.
+    4. `Op` never appears after type checking (D-3 outputs `App`s), which
+       is expressed by a type family, as `XDecls` / `XHDecls`
+       (`Syntax.hs:445-450`) and `XHole` (F-3):
+         type family XOp (p :: Pass) where
+           XOp 'Parsing = (); XOp 'Renaming = (); XOp 'TypeCheck = Void
+         | Op !(XOp p) !(XId p) !(LExp p) !(LExp p)
+       The parser (`lop`) and renaming (`rearrangeOp` / `opExp`) build
+       `Op () ...`; desugaring has `go (S.Op v _ _ _) = absurd v` (the
+       present `Op` case, `Desugar.hs:116-119`, is removed). In debug
+       output of the typed AST operators appear as prefix applications.
+    5. `numberOfArgs` (used only for eta-expanding `Con` / `RCon`) also
+       counts `InstFunTy`:
+         numberOfArgs (T.TyCon n [_, t]) | n == nameTyInstArr = numberOfArgs t + 1
+       No effect now (constructors take no instance arguments, D-4); with
+       constructor instance arguments in the future (TODO),
+       `MkT : {{Eq a}} -> a -> T a` would expand to
+       `\d x -> Con MkT [d, x]`, keeping the dictionary as a field. Notes
+       in A-2 and C-2 corrected.
+- (H-4-2) Dictionary representation: plan (a), a dedicated constructor
+  per class.
+    - Fields: superclass dictionaries in `extends` order, then methods in
+      sig order (`ciMethods`); with m superclasses, superclass i is field
+      i and method j field m + j. E.g. `class Ord a extends Eq a` with
+      `compare`: `[Eq dictionary, compare]`.
+    - Value: `C.Con dictC [f1, ..., fn]` with a new System name `dictC`
+      (naming in H-4-3); projection by
+      `\d -> case d of dictC x1 ... xn -> xi` (Core `Case` / `PCon`).
+    - A class without superclasses and methods has `C.Con dictC []`; a
+      single-method class has the same shape (no newtype-like special
+      case).
+    - Why (a): dictionaries are Sparcl values (Q1: `def d = eqNat`) and
+      may be printed in the REPL, so showing the class helps; `Con` /
+      `Case` in the evaluator only compare constructor names, so a
+      constructor without a data declaration works; `Case` is Core's own
+      way of projecting.
+    - Rejected: (b) Core `WTup` / `WProj i n` (no new names, direct
+      projection, but reuses the construct for additive `&`-tuples,
+      `WProj` has a "too loose" FIXME, printed as `&(...)`); (c) ordinary
+      tuples (indistinguishable from user tuples, no advantage over (a)).
+- (H-4-3) Values of methods and superclass projections; generated names.
+    Found: unnamed instances are `Original currentModule (System
+    (NInstance k)) ...` (`Renaming.hs:475`, `Name.hs:35`); `Original`
+    names are equal iff module and `NameBase` are (`Name.hs:68`).
+    1. New `SystemName`s, used as `Original m (System ...)` with `m` the
+       module declaring the class:
+         NDict !NameBase            dictionary constructor of class C
+                                    (H-4-2)                    <dict Eq>
+         NSuperProj !NameBase !Int  projection of the i-th superclass
+                                    of C (E-3)                 <super Ord #0>
+         NDefault !NameBase         default method of method m
+                                    (G-5)                      <default />=>
+       `NameBase` rather than `Name` avoids a recursive type between
+       `SystemName` and `Name`; module `m` plus the base identifies the
+       class / method (method names are unique top-level names in the
+       module, Renaming (a)). Using the class's module makes dictionary
+       expressions built in importing modules (E-3 projections) refer to
+       the same names.
+    2. Method j of class C (m superclasses, n fields): binding
+         (the method's own name, its global type (B-5),
+          \d -> case d of dictC x1 ... xn -> x(m+j))
+    3. Superclass projection: binding
+         (proj_{C,i} = NSuperProj C i, forall as. C as -> Si (ordinary
+          arrow, Omega), \d -> case d of dictC x1 ... xn -> xi)
+    4. `d`, `x1 ... xn` are `Generated i Desugaring` by `withNewNames`.
+    5. Only for classes declared in the module; imported classes' methods
+       and projections are in their modules' value tables (H-4-5).
+    6. `case` is Core's ordinary `Case` (not `RCase`), static (H-3 4);
+       fields are built lazily (G-5), so projecting one field does not
+       evaluate the others.
+- (H-4-4) Instance values and default-method values. Input from type
+  checking (G-1 6): superclass dictionary expressions in terms of
+  `d1 ... dk` (G-3 3), typed bodies of defined methods (G-5 3), omitted
+  methods.
+    1. `instance x : forall as. {{H1}} -> ... -> {{Hk}} -> C ts`:
+         x = \d1 ... dk ->
+               let self = dictC [sup_1, ..., sup_m, impl_1, ..., impl_n]
+               in self
+       - `d1 ... dk`: the names given in G-3 3 (`Generated i
+         TypeChecking`), used as binders, since the superclass expressions
+         refer to them;
+       - `sup_i`: G-3 3's dictionary expression desugared (e.g.
+         `eqList (proj_{Ord,0} d1)` for `ordList`);
+       - defined method: `body_j d1 ... dk`, the desugared body applied to
+         the dictionaries (its type is `{{H1}} -> ... -> {{Hk}} -> t[ts]`,
+         so by C-1 / C-2 it takes the k dictionaries first);
+       - omitted method with a default: `dflt_m self` (`NDefault m`
+         applied to the instance's own dictionary, G-5 2);
+       - `let self` lets the dictionary refer to itself; Core `Let` is
+         recursive (`evalUBind`'s `rec`) and fields are lazy (G-5); the
+         same shape also for k = 0 (instead of referring to the global x);
+       - binding type: the instance type.
+    2. Default method: binding `(NDefault m, forall as bs. {{C as}} -> t,
+       desugarRHS of the default's clauses)`, a function taking the
+       dictionary first (C-1 / C-2); only for classes declared in the
+       module; imported defaults are found in the declaring module's
+       value table (hence the class's module in the name, H-4-3).
+    3. With k > 0 every use `x d1 ... dk` builds a new dictionary, as
+       Haskell's dictionary functions; no sharing optimization.
+    4. Example (`(/=)` uses the default):
+         eqNat  = let self = dictEq [eqNat_eq, <default />=> self] in self
+         eqList = \d1 -> let self = dictEq [eqList_eq d1,
+                                             <default />=> self] in self
+- (H-4-5) Top level and module value tables (decided 2026-11-05).
+  Found (`Module.hs:454-571`): `interpDecls` evaluates the bindings from
+  `desugarTopDecls` by `interp valEnv bind` as one recursive group and
+  stores them in `mcValueTable`; `mcTypeTable` is `nts`; import / export
+  lists filter all tables by names (`restrictNames` / `exportNames`);
+  without an export list a module exports its own definitions only.
+    1. The bindings of methods and projections (H-4-3) and of defaults and
+       instances (H-4-4) are added to the result of `desugarTopDecls` and
+       evaluated in the same recursive group as the `def`s, so `def`s and
+       instance bodies may refer to each other (G-1 5) and dictionaries
+       to themselves (G-5).
+    2. `nts` also gets the types of methods, instance names, projections
+       and defaults (extends B-4 (1)); the same types as in the bindings.
+    3. Value tables (settles B-4 (4)): `restrictNames` / `exportNames` keep,
+       besides the listed names, every name in the module's instance table
+       (named and unnamed) and every `NSuperProj` / `NDefault` name, since
+       expressions made by search / desugaring refer to them without the
+       user writing them (instances and projections from E-3 dictionary
+       expressions; defaults from instance values in other modules, e.g.
+       an instance in B using the default `(/=)` of class `Eq` in A).
+       Method names are user names and filtered as before (defaults and
+       instance values are closures over the environment of their own
+       module, so filtering methods in an importing module does not
+       matter). The name table is filtered as before (whether `eqNat` can
+       be written, B-4 (2)); type tables are filtered as before (search
+       takes types from the instance and class tables).
+    4. Transitive, as B-4 (3): the value table of a new module is its own
+       values plus the values of the names kept by 3 from all imported
+       modules, with or without an export list (C importing only B, which
+       imports A, has A's instances in its instance table and needs their
+       values). `Original` names include the module, so merging never
+       clashes.
+    5. Dictionary constructors (`NDict`) are not values; they are only
+       names in Core `Con` / `Case`.
+    6. REPL expressions are evaluated with the context's value table
+       (`valueOfExpressionStr`), which has instances, projections and
+       defaults by 3 and 4.
+
+
 TODO / known issues
 ===================
+
+- (On hold, 2026-11-04) Express the restrictions on instance patterns by
+  the surface AST, as was done for `{{e}}` (`Arg`, see "Representation").
+  Now renaming enforces them (`checkInstPatArg` / `checkNoInstPat`,
+  `Renaming.hs:407-425`): (i) contents only a variable or `_`; (ii) only
+  as an argument pattern of `def` / `\`. Proposal:
+    data ArgPat p = ExplicitPat !(LPat p)
+                  | InstPat !(Loc (InstBinder p))   -- {{x}} / {{_}}
+    data InstBinder p = InstVar !(XId p) | InstWild !(XPWild p)
+    | Abs ![ArgPat p] !(LExp p)
+    = DDef !(XId p) ![([ArgPat p], Clause p)]
+    -- `PInst` removed from `Pat`; `PCon` keeps `[LPat p]` for now
+  Keep in mind: instance patterns in constructor arguments (GADT-style
+  `sig MkT : {{Eq a}} -> a -> T`, pattern `MkT {{d}} x`; a future
+  relaxation, Renaming "Patterns: PInst") -- then `PCon !(XId p)
+  ![ArgPat p]`, sharing the type with function arguments; expressions
+  already allow `App (Con c) (InstArg e)` by (c); `ConTy` fields would
+  need an "instance field" mark. C-2's per-step decision should be a
+  function independent of function types (given "is the next position an
+  instance?" from an arrow or a field mark) so constructors can reuse it.
+  (iii) (same `{{ }}` positions in all clauses) stays a renaming check.
+  Effects: about 32 places use `Abs` / `DDef`; the parser reads instance
+  binders only in argument positions of `\` / `def` (elsewhere, and
+  `({{x}})`, become parse errors); renaming loses the two checks and names
+  `InstBinder`s; C-2 decides by constructor, C-3's `go (PInst p)` moves
+  to argument-pattern handling, F-1's inserted pattern becomes
+  `InstPat (InstVar (d, c))`; desugaring converts `ArgPat` to `LPat`
+  (`InstVar x` -> `PVar x`, `InstWild` -> `PWild`) before `makeTuplePatS`
+  (`Desugar.hs:244`) and in `checkAllVars`; `Let1` builds
+  `Abs [ExplicitPat p1] e2`.
+  Open questions: adopt it; binder-only `InstBinder` (recommended: class
+  types have no constructors, so (i) never needs relaxing) vs
+  `InstPat !(LPat p)` with (i) still checked; staging of `PCon`
+  (`[LPat p]` now, `[ArgPat p]` with constructor instance arguments).
+  Until decided, type checking keeps `PInst` (C-2, C-3, F-1, H-1).
+
+- (Pre-existing; found 2026-11-04 while discussing F-3) Type checking and
+  desugaring of the same input should share the typing context, but they
+  do not: `Module.hs` type-checks with `execTCWith tc ...`, which runs in
+  a fresh context `tc'` made by `refreshTC` (`TCMonad.hs:499-503`) and
+  discards it, and then desugars with the outer `tc` by `execTC tc ...`
+  (`Module.hs:500-507` for modules, `Module.hs:420-429` for REPL
+  expressions, where desugaring is deferred as `eComp`). The outer `tc`
+  (`lcTC` with the debug level set, `Module.hs:386-390`) has nothing to do
+  with that input: its environments are not the ones used for checking,
+  and its error / constraint IORefs are never refreshed, i.e. shared
+  across inputs.
+  It works now only by accident: desugaring uses the TC monad only for
+  `zonkType` (`Desugar.hs:79,128`), which reads the IORefs of meta type
+  variables reachable from the typed AST (`metaRef`, `Type.hs:249-256`)
+  and so gives the same result in any context; it reads no environment
+  and reports no error.
+  Latent bug: as soon as desugaring depends on the context, it breaks,
+  e.g. `reportError` in desugaring would accumulate in the never-refreshed
+  outer IORef and be reported again for later REPL inputs; `askType` would
+  see environments other than the input's; a table written by type
+  checking into `tc'` (such as the first idea for F-3, `tcGoalSols`) would
+  be invisible. Fix (not part of the type-class work): run desugaring in
+  the context of the type-checking run, e.g. let `execTCWith` return
+  `tc'` (or run both in one `execTCWith`), also for the deferred REPL
+  `eComp`. F-3 (b) does not depend on this.
 
 - Type checking and desugaring do not handle any of the new constructs
   (`inferTopDecls` rejects classes and instances; incomplete-pattern
@@ -437,6 +2170,49 @@ TODO / known issues
   Note that tuple patterns (`PCon`) are already printed as `(p1, ..., pn)`
   (pre-existing), and `Typing/Type.hs` prints internal tuple types as
   `(t1, ..., tn)`.
+- Classes/instances across modules (B-4) are not exercised by any sample:
+  add a multi-file sample (e.g. A defines a class and instances, B imports
+  A with an import list, C imports only B) once type checking works.
+- Add a sample for the C-2 limitation and its workaround once type checking
+  works: a definition whose trailing instance argument is used from a
+  `where` declaration (and one with `with`), e.g.
+    sig f : a -> {{Eq a}} -> Bool
+    def f x {{_}} = go where def go = x == x end
+  plus the failing variant without `{{_}}` (`def f x = go where ...`) as a
+  Nonexamples-style ill-typed case.
+- Add samples for the C-4 workarounds once type checking works: a local
+  `def` with a `sig` taking `{{d}}` inside `let`; expression annotations
+  with an explicit `forall` and with a monotype; plus ill-typed cases
+  (`def f {{d}} x = ...` without `sig`; `(\{{d}} x -> ... : {{Eq a}} -> ...)`
+  without `forall`, an unbound type variable).
+- Once type checking and desugaring work, run `Invertible.sparcl`'s
+  `t1` .. `t9` forwards / backwards (H-3), e.g. `t1 = fwd twice (S Z)`
+  should be `S (S (S Z))` and `t2 = bwd twice (S (S (S Z)))` `S Z`.
+- Add a regression sample for D-2 (F1) to `Examples/`: higher-rank `let`
+  / `case` (`def t1 = let g <- ex0 in g (\y -> y)`,
+  `def t3 = case ex0 of g -> g (\y -> y) end` with
+  `sig ex0 : (forall x. x -> x) -> (Int, Bool)`), accepted now and to stay
+  accepted; plus a `case` whose scrutinee needs a trailing instance
+  argument.
+- Add samples for G-2 (5) once type checking works: a class with a
+  method not mentioning a class parameter (`class Sized a where sig size :
+  Int end`) used with an explicit instance (`size {{sizedNat}}`,
+  accepted), and an implicit use (`def n = size`, ill-typed,
+  Nonexamples-style, `AmbiguousGoal`).
+- Add a sample with cyclic superclasses (G-2 (3)): declarations, global
+  instances of both classes, and uses through a local instance; checks
+  that search stops and that the mutually recursive dictionaries evaluate.
+- Add samples for the D-5 limitation once type checking works: `t1`
+  (accepted) and `t2` (ill-typed, Nonexamples-style) of D-5, plus the
+  workaround of `t2` with an annotation.
+- Parser: a GADT-style constructor with an instance argument
+  (`sig C : {{Eq a}} -> a -> T a`) is rejected with "A return type of
+  GADT-style definition must be headed by the type constructor."; give a
+  dedicated message ("a constructor cannot take instance arguments") (D-4).
+- Module names (pre-existing): a file without a `module` declaration is
+  `Main`; if such a top file does `import Main` of another header-less
+  `Main.sparcl`, two different modules are named `Main` and all their
+  top-level names (instances included) may clash.
 - test/Spec.hs: `recursivelyListDirectories` calls `doesDirectoryExist` on
   the bare entry name instead of `dir </> entry`, so subdirectories of
   `Examples/` are not recursed into (left as is).
