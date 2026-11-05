@@ -546,7 +546,20 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     `cabal test` passes (35 examples); `Examples-Class` stop at type
     checking as before; `{{e}}` outside an argument position is now a
     parse error with megaparsec's generic message (TODO stage 6).
-  - Next: stage 1 (details to be confirmed before coding).
+  - Stage 1 DONE (2026-11-05): spine checking with `Arg` directly
+    (`flattenSpine :: LExp -> (LExp, [Arg])`, `checkSpine`; locations of
+    rebuilt `App`s recomputed as `location f <> location e`, error
+    contexts from the rebuilt partial applications; `Var` is a spine
+    without arguments; `Op` a spine with head `Var op`), the expand-last
+    flag (plan (B), see D-2 (F1) IMPLEMENTATION; `Let1` / `Case` use
+    `inferTyExpandM`), `alignPatsTy` replacing `ensureFunTyN` (ordinary
+    arrows only), `checkTyPC` / `firstPats` moved to the top level,
+    `checkSigDefBody` / `finishSigDef` factored out of `inferMutual`.
+    `cabal test` passes (36 examples, with the new
+    `Examples/HigherRankLetCase.sparcl`: higher-rank `let` / `case`
+    (`t1` / `t3`), a parenthesized head and an operator with a
+    polymorphic argument).
+  - Next: stage 2 (details to be confirmed before coding).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
@@ -1262,6 +1275,20 @@ Application insertion
   (for data types). This replaces the "checked against a fresh meta"
   bullet above. Rejected (F2): keep checking against a meta and reject
   `t1` / `t3`.
+  IMPLEMENTATION (stage 1, 2026-11-05; plan (B), as Agda's envExpandLast,
+  chosen by the user over (A) a field of `Infer`): `TypingContext` has
+  `tcExpandLast :: !ExpandLast` (`data ExpandLast = ExpandLast |
+  DontExpandLast`, initially `DontExpandLast`; Agda's
+  `ReallyDontExpandLast` is not needed). The CALLER sets it: `checkTy`
+  in Check mode sets `ExpandLast` at its entry (Agda's `doExpandLast`);
+  `inferTy` sets `DontExpandLast` (`inferExpr = inferExpr'
+  DontExpandLast`); `inferTyExpandM` (for `e1` / `e0`) sets `ExpandLast`
+  (`inferExpr' ExpandLast`); `checkTy` in Infer mode keeps the flag, so
+  the parts that are the value of the whole in Infer mode (parentheses,
+  the body of `let`, branches of an inferred `case`) inherit it (e.g. in
+  `case (let ... in f 3) of ...` the body `f 3` inserts), while parts
+  inferred by `inferTy` (spine heads, bodies of inferred abstractions)
+  reset it. The spine reads it after its arguments (stage 3).
   Rejected (M2): all sig-less `def`s inferred (accepts `def g = elem` and
   `def g x = elem`), a large change of `inferMutual` with order dependence
   when several clauses are unified. Rejected earlier variants: copying
@@ -2218,12 +2245,9 @@ TODO / known issues
 - Once type checking and desugaring work, run `Invertible.sparcl`'s
   `t1` .. `t9` forwards / backwards (H-3), e.g. `t1 = fwd twice (S Z)`
   should be `S (S (S Z))` and `t2 = bwd twice (S (S (S Z)))` `S Z`.
-- Add a regression sample for D-2 (F1) to `Examples/`: higher-rank `let`
-  / `case` (`def t1 = let g <- ex0 in g (\y -> y)`,
-  `def t3 = case ex0 of g -> g (\y -> y) end` with
-  `sig ex0 : (forall x. x -> x) -> (Int, Bool)`), accepted now and to stay
-  accepted; plus a `case` whose scrutinee needs a trailing instance
-  argument.
+- [Partly done in stage 1: `Examples/HigherRankLetCase.sparcl` has `t1` /
+  `t3`.] Remaining: a `case` whose scrutinee needs a trailing instance
+  argument (after stage 3).
 - Add samples for G-2 (5) once type checking works: a class with a
   method not mentioning a class parameter (`class Sized a where sig size :
   Int end`) used with an explicit instance (`size {{sizedNat}}`,
