@@ -537,7 +537,16 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     and search, 4 bodies, 5 desugaring / evaluation / modules, 6 samples
     and tests); approved by the user, with one commit per stage (push
     only when asked). See "Implementation plan" below.
-  - Next: stage 0 (details to be confirmed before coding).
+  - Stage 0 DONE (2026-11-05): `Arg`, `XOp`, `XHole` / `InstHole` (lazy
+    `Void`-able tag fields with `absurd`, see H-1 2; `XHole` is a tag and
+    the ref a separate field, F-3 1 revised; printing `?g_k` deferred to
+    stage 3), `Phase` `TypeChecking`,
+    `NDict` / `NSuperProj` / `NDefault`; typing of `App _ (InstArg _)`
+    reports "not supported yet" until stage 3; `Op` is output as `App`s.
+    `cabal test` passes (35 examples); `Examples-Class` stop at type
+    checking as before; `{{e}}` outside an argument position is now a
+    parse error with megaparsec's generic message (TODO stage 6).
+  - Next: stage 1 (details to be confirmed before coding).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
@@ -563,7 +572,8 @@ Implementation plan (approved 2026-11-05)
      `StaticException`.
   3. Insertion and search: C-1, C-2 (`InstFunTy` rows), C-3, C-4, D-1 /
      D-2 instance rows, goals and holes (E-1, F-3), search (E-2 .. E-4),
-     superclass check (G-3 3-b), REPL goals (H-2). Check: explicit,
+     superclass check (G-3 3-b), REPL goals (H-2); let holes carry the
+     goal's name so that unfilled holes print as `?g_k` (F-3 4). Check: explicit,
      implicit and local-instance examples; `:type`; error examples.
   4. Bodies: G-5, `NotAMethod` / `MissingMethod`, extended results
      (G-1 6). Check: `Examples-Class` (except `Functor.sparcl`)
@@ -1599,6 +1609,13 @@ Typed AST of inserted forms
          | InstHole !(XHole p)    -- dictionary of a goal (made by D-1 / D-2)
        Only the type checker makes it; parsing and renaming never see it
        (`absurd` / "cannot happen" in their cases).
+       REVISED at stage 0 (user, 2026-11-05): `XHole` is only a tag, like
+       `XOp`, and the ref is an ordinary field:
+         type family XHole (p :: Pass) where
+           XHole 'Parsing = Void; XHole 'Renaming = Void; XHole 'TypeCheck = ()
+         | InstHole (XHole p) !(IORef (Maybe (LExp p)))
+       (tag lazy, H-1 2). Printing needs no per-pass class: `Pretty (Exp p)`
+       reads the ref and prints `pprPrec 10 e` or `?`.
     2. Each inserted application (D-1, D-2) creates a fresh ref, puts
        `InstArg (InstHole ref)` in the AST and records it as `goalRef` of
        the goal (E-1). When the goal is solved (E-2, E-3), the dictionary
@@ -1609,7 +1626,9 @@ Typed AST of inserted forms
        goals as errors before desugaring).
     4. Pretty printing shows the contents if filled and `?g_k` (`goalId`)
        otherwise, reading the ref by `unsafePerformIO` as metas are printed
-       (`Type.hs:260`).
+       (`Type.hs:260`). [Stage 0 prints only `?`: the hole does not carry
+       the goal's name yet. To be fixed in stage 3 when goals are made
+       (user, 2026-11-05).]
     5. A goal postponed outward (E-2) needs nothing special: the ref is
        carried by the goal.
   Why: this is how meta type variables are handled. Their solutions are
@@ -1867,8 +1886,18 @@ Remaining parts (H)
        arguments `[Arg]` are processed from the left; `InstArg e` is the
        `Inst e` row of D-1's table. (The earlier proposal "`go (InstArg _)`
        is cannot-happen" is no longer needed.)
-    2. `go (InstHole v) = absurd v`, since `XHole 'Renaming = Void` (F-3);
+    2. `go (InstHole v _) = absurd v`, since `XHole 'Renaming = Void`
+       (F-3; `XHole` is a tag, F-3 1 revised);
        guaranteed by the type, not a run-time "cannot happen".
+       Implementation note (stage 0, 2026-11-05): the tag field is LAZY,
+       `InstHole (XHole p) ...` (likewise `Op (XOp p) ...`, H-4-1 4), as the
+       existing `Decls (XDecls p) ...` / `HDecls (XHDecls p) ...`. With a
+       strict `!` field GHC's pattern-match checker treats the constructor
+       as uninhabited where the field is `Void` and reports the `absurd`
+       equation as redundant (-Woverlapping-patterns); lazy fields keep
+       the explicit `absurd` cases, in the codebase's existing style
+       (user's choice (ii); rejected (i): strict fields with the cases
+       omitted).
     3. Patterns: with `PInst` as now (the `ArgPat` revision is on hold,
        TODO), C-3's `go (PInst p)` is used at argument positions; other
        positions and contents other than a variable / `_` are rejected by
@@ -1946,7 +1975,8 @@ Remaining parts (H)
        (`Syntax.hs:445-450`) and `XHole` (F-3):
          type family XOp (p :: Pass) where
            XOp 'Parsing = (); XOp 'Renaming = (); XOp 'TypeCheck = Void
-         | Op !(XOp p) !(XId p) !(LExp p) !(LExp p)
+         | Op (XOp p) !(XId p) !(LExp p) !(LExp p)
+       (the `XOp` field lazy, see H-1 2's implementation note)
        The parser (`lop`) and renaming (`rearrangeOp` / `opExp`) build
        `Op () ...`; desugaring has `go (S.Op v _ _ _) = absurd v` (the
        present `Op` case, `Desugar.hs:116-119`, is removed). In debug
