@@ -587,7 +587,39 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     "Undefined variable: eqNat"); using a method in an expression is a
     type error until stage 3 (no `InstFunTy` rows in the spine); instance
     bodies and defaults are not checked until stage 4.
-  - Next: stage 3 (details to be confirmed before coding).
+  - Stage 3 split into two commits (user, 2026-11-05): 3-A
+    infrastructure and insertion, 3-B search and solving. Holes carry the
+    goal as an `XId` (name and class type), `InstHole (XHole p) !(XId p)
+    !(IORef (Maybe (LExp p)))`, printed `?g` when unfilled (F-3 4).
+  - Stage 3-A DONE (2026-11-05): `tcLocalInsts` / `withLocalInsts`,
+    `tcRefGenCount` / `newGenName` (`Generated i TypeChecking`), `Goal`
+    (E-1, plus `goalLoc`: `TypeErrorContext` has no location, so the
+    location of creation is kept for errors) / `tcGoals` / `addGoals` /
+    `gatherGoals` / `atGoal`, `CheckingSuperclasses`; `shapeOf` (zonk and
+    expand synonyms at the top: a sig may hide `{{C}} -> t` in a synonym);
+    C-1 at the entry of `checkTy` (exceptions: `Abs` starting with `{{p}}`,
+    `Parens`, `Sig`); C-2 `alignPatsTy` with `Slot` (`Explicit` / `Inst` /
+    `Inserted`) and `expandSlots` (fresh inserted patterns per clause;
+    local instances registered for the body) used by `Abs` (Check),
+    `checkTyPC`, `checkSigDefBody` and sig-less defs; C-3 `PInst` in
+    `checkPatTyWork`; C-4 for `Abs` in Infer mode and the meta row; D-1
+    rows (`Inst` checks `{{e}}` against the class with Omega; insertion
+    makes a goal and a hole; `NotInstArgPosition` / `InstArgUnknownFun`)
+    and D-2 trailing insertion under the expand-last flag; `newGoal`.
+    Desugaring treats `PInst p` as `p` (in `separatePat` and `checkVar` of
+    `Abs`), brought forward from H-4-1 3 so that files can be loaded.
+    Interim (until 3-B): a program that makes goals is rejected with
+    "Instance search is not supported yet." (`interimRejectGoals` in
+    `inferTopDecls` and `inferExp`).
+    Tests: 47 examples, with five new `Nonexamples_Illtyped/ClassInst*`
+    (`{{e}}` at an ordinary argument, `{{e}}` to a function of unknown
+    type, `{{d}}` without sig, `{{d}}` at an ordinary arrow, `{{d}}` in an
+    inferred abstraction). Checked by hand: explicit passing, written and
+    inserted instance patterns, inserted abstraction, `\{{d}} x -> ...`,
+    a trailing instance argument bound by a lambda in the body;
+    `:type elem` shows the full type (no trailing insertion in Infer
+    mode) and `:type elem {{eqNat}}` gives `Nat -> List Nat -> Bool`.
+  - Next: stage 3-B (search and solving).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
