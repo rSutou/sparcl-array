@@ -619,7 +619,50 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     a trailing instance argument bound by a lambda in the body;
     `:type elem` shows the full type (no trailing insertion in Infer
     mode) and `:type elem {{eqNat}}` gives `Nat -> List Nat -> Bool`.
-  - Next: stage 3-B (search and solving).
+  - Stage 3-B DONE (2026-11-05): new module `Typing/Instance.hs`:
+    `unifyPure` (unification without writing metas; the candidate's
+    bound variables and, optionally, the goal's metas are flexible,
+    skolems rigid; with metas rigid it is E-4's one-way matching),
+    local candidates (direct, then projections breadth-first, innermost
+    first, `superProjName` = `NSuperProj` in the class's module; same
+    types dropped so cyclic superclasses end; projection steps share the
+    depth budget with subgoal recursion, E-3 3 amended), global candidates
+    by the revised E-4 rule (U = unifiable heads; commit if exactly one
+    and it matches one-way; stuck if it would instantiate goal metas or
+    several with metas; `AmbiguousInstances` otherwise; `NoInstance` if
+    none, `InstSearchTooDeep` if projections were cut), subgoals solved
+    on the spot and stuck ones postponed as new goals in the same scope
+    (their holes sit inside the parent's dictionary; desugaring handles
+    nested holes -- F-3 2's "dictionaries contain no holes" no longer
+    holds), `solveGoals` with `PostponeOutward` / `ReportAtTopLevel`,
+    `reportLeftoverGoals`, `makeGoal`. In `Typing.hs`: goals gathered
+    per definition in `inferMutual` and solved after the group's bodies
+    (before generalization / multiplicity constraints), REPL goals in
+    `inferPolyTy` (H-2 2), G-3 3-b `checkSuperInstances` (context
+    `CheckingSuperclasses`; the superclass dictionaries with the
+    instance's local instances are returned by `inferTopDecls` for
+    H-4-4), the 3-A interim rejection replaced by `reportLeftoverGoals`.
+    Refinement (to be confirmed by the user): in a top-level definition
+    without a signature, a goal whose metas would be generalized is
+    reported as `CannotInferInstArg` also when no instance matches (the
+    revised E-4 gives `NoInstance` for zero unifiable candidates even with
+    metas); with a signature a local instance would solve it, so "add a
+    signature" is the useful message. Accepted programs are unchanged.
+    Tests: 53 examples, with six new `Nonexamples_Illtyped/Class*`
+    (`NoInstance`, `AmbiguousInstances`, `AmbiguousGoal`,
+    `CannotInferInstArg`, missing superclass instance, search too deep).
+    Checked by hand (desugared output): an inserted pattern solved by
+    the local instance, a global instance, `eqList eqNat`, a superclass
+    projection `<super Ord #0> d`, a local instance seen from `where`, a
+    goal of a local group postponed outward and solved there, a local
+    instance chosen over a matching global one, `Eq (List ?a)` committed
+    with its subgoal postponed; `:type Z == Z` is `Bool`.
+    `Examples-Class`: all but `Functor` / `Invertible` type-check and
+    stop at evaluation (no instance values until stage 5); `Invertible`'s
+    `t6 = bwd serialize (...)` is genuinely ambiguous (`Serialize a` with
+    nothing fixing `a`): `CannotInferInstArg`; the sample needs
+    `sig t6 : List Nat` (TODO, stage 6).
+  - Next: stage 4 (bodies).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
@@ -2302,6 +2345,9 @@ TODO / known issues
   with an explicit `forall` and with a monotype; plus ill-typed cases
   (`def f {{d}} x = ...` without `sig`; `(\{{d}} x -> ... : {{Eq a}} -> ...)`
   without `forall`, an unbound type variable).
+- `Examples-Class/Invertible.sparcl`: `def t6 = bwd serialize (...)` is
+  ambiguous (nothing fixes the `a` of `Serialize a`); add
+  `sig t6 : List Nat` (found at stage 3-B).
 - Once type checking and desugaring work, run `Invertible.sparcl`'s
   `t1` .. `t9` forwards / backwards (H-3), e.g. `t1 = fwd twice (S Z)`
   should be `S (S (S Z))` and `t2 = bwd twice (S (S (S Z)))` `S Z`.
