@@ -559,7 +559,35 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     `Examples/HigherRankLetCase.sparcl`: higher-rank `let` / `case`
     (`t1` / `t3`), a parenthesized head and an operator with a
     polymorphic argument).
-  - Next: stage 2 (details to be confirmed before coding).
+  - Stage 2 DONE (2026-11-05): `InstFunTy` pattern synonym and printing
+    (A-1), the subsumption case (A-3); `ClassInfo` / `ClassTable` /
+    `InstTable` (`mergeInstTable`), `tcClassEnv` / `tcInstEnv`,
+    `withClassesAndInstances`, `setEnvs` / `runTCWith` / `execTCWith`
+    take both tables; `mcClassTable` / `mcInstTable` (not filtered by
+    import / export lists; own plus imported, transitively); the REPL
+    passes them too (H-2 1); the 12 `ErrorDetail`s of E-5 with messages;
+    `checkClassTypes` / `checkClassTypesL` / `checkClassApp` (G-4) at
+    data fields, superclasses, method sigs, instance types, `sigMap` and
+    `Sig`; `inferTopDecls` stages 1 .. 3-a (classes: `ClassInfo`, method
+    types by `methodType` (B-5) into `tcTyEnv`; instances into the
+    instance table and `tcTyEnv`, also when a check fails) and the extra
+    results (own class and instance tables; `nts` include methods and
+    instances); `PInst` reports "not supported yet" until stage 3
+    (instead of a non-exhaustive-pattern crash).
+    Tests: 42 examples pass, with six new `Nonexamples_Illtyped/Class*`
+    (not a class in a sig / a field / via a synonym, arity mismatch,
+    superclass and instance head not a class; each fails with exactly
+    the intended error). Checked by hand: a declaration-only file
+    type-checks and `:type` shows B-5 method types (e.g.
+    `later : forall a b. {{Later a}} -> a -> b -> b`), instance types and
+    unnamed instances (`<instance #3> : Convert Nat Int`); a superclass
+    declared later is fine.
+    Known limitations until later stages: instance values do not exist
+    until stage 5 (`def d = eqNat` type-checks but fails at evaluation:
+    "Undefined variable: eqNat"); using a method in an expression is a
+    type error until stage 3 (no `InstFunTy` rows in the spine); instance
+    bodies and defaults are not checked until stage 4.
+  - Next: stage 3 (details to be confirmed before coding).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
