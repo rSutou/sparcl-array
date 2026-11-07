@@ -165,6 +165,10 @@ Other changes
     - `simpleExpr` accepts `{{e}}` (`InstArg`); `simplePat` accepts `{{p}}`
       (`PInst`). Syntactically `{{e}}` may appear anywhere a simple
       expression can; misplaced ones are to be rejected later.
+      [Superseded at stage 0 by the expression revision (c): `{{e}}` is an
+      argument (`Arg`) parsed only by `appExpr` at argument positions;
+      elsewhere it is a parse error, with a dedicated message since stage
+      6 (`misplacedInstArg`).]
     - removed `classConstraint` and the stray `import GHC.RTS.Flags`.
 - Surface.Syntax: pretty printing for the new constructs; the
   `where ... end` body of class/instance declarations is printed by
@@ -1855,10 +1859,15 @@ Typed AST of inserted forms
        (`XId 'TypeCheck = (Name, Ty)`).
     2. Pattern inserted in a clause (C-2, `Inserted c`): the same
        `PInst (PVar (d, c))` at the corresponding position of the pattern
-       list.
+       list. [As implemented: the slot is `Inserted d c`, `d` generated
+       once per definition and shared by its clauses (C-2 revised at
+       stage 5).]
     3. Inserted application (D-1, D-2):
          App f (Loc l (InstArg (Loc l (InstHole ref))))
        `InstHole ref` stands for the goal and is filled after solving (F-3).
+       [As implemented (F-3 1 revised at stage 0, the goal added at stage
+       3-A): `App f (InstArg (Loc l (InstHole () (g, c) ref)))`, where
+       `(g, c)` is the goal's name and class type (an `XId`).]
     4. Dictionary expressions built by search (E-3):
          local instance        Var (d, c)
          global instance       App (Var (inst, ty)) (InstArg sub) ...
@@ -1902,7 +1911,8 @@ Typed AST of inserted forms
        otherwise, reading the ref by `unsafePerformIO` as metas are printed
        (`Type.hs:260`). [Stage 0 prints only `?`: the hole does not carry
        the goal's name yet. To be fixed in stage 3 when goals are made
-       (user, 2026-11-05).]
+       (user, 2026-11-05).] [Done at stage 3-A: `InstHole` carries the
+       goal as an `XId`, and an unfilled hole prints as `?g`.]
     5. A goal postponed outward (E-2) needs nothing special: the ref is
        carried by the goal.
   Why: this is how meta type variables are handled. Their solutions are
@@ -2466,7 +2476,9 @@ TODO / known issues
   of the new constructs (`inferTopDecls` rejects classes and instances;
   incomplete-pattern warnings in Desugar.hs). Renaming handles all of
   them.
-- `Typing/Type.hs` (internal types) does not pretty-print `nameTyInstArr`.
+- [Done at stage 2: printed as `{{C}} -> t`, e.g. `:type elem` gives
+  `forall a. {{Eq a}} -> a -> List a -> Bool`] `Typing/Type.hs`
+  (internal types) does not pretty-print `nameTyInstArr`.
 - Type-variable application (`f a`) is not supported by the type parser,
   which constructor classes such as `Functor` need.
 - Pretty printing: the invertible type constructor is printed with its
