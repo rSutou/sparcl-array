@@ -642,7 +642,7 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     `CheckingSuperclasses`; the superclass dictionaries with the
     instance's local instances are returned by `inferTopDecls` for
     H-4-4), the 3-A interim rejection replaced by `reportLeftoverGoals`.
-    Refinement (to be confirmed by the user): in a top-level definition
+    Refinement (approved by the user 2026-11-07): in a top-level definition
     without a signature, a goal whose metas would be generalized is
     reported as `CannotInferInstArg` also when no instance matches (the
     revised E-4 gives `NoInstance` for zero unifiable candidates even with
@@ -662,7 +662,43 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     `t6 = bwd serialize (...)` is genuinely ambiguous (`Serialize a` with
     nothing fixing `a`): `CannotInferInstArg`; the sample needs
     `sig t6 : List Nat` (TODO, stage 6).
-  - Next: stage 4 (bodies).
+  - Stage 4 DONE (2026-11-07; details approved by the user the same day).
+    G-1 stage 5 in `inferTopDecls`, after the definitions and under
+    `withVars` of their types: default methods, then instance bodies, in
+    declaration order; `reportLeftoverGoals` moved after them.
+    `checkSigDef` (G-5 1): `checkSigDefBody` under `pushLevel` with its
+    goals gathered, `solveGoals (ReportAtTopLevel True)`, then
+    `finishSigDef True`; the method name is not bound. Defaults are
+    checked against the global method type (G-5 2). Instance bodies are
+    checked against `instMethodType` (G-5 3): for the instance type
+    `forall as. cs0 => {{H1}} -> ... -> {{Hk}} -> C ts` and the signature
+    `forall bs. cs => t`, `forall as bs. cs0, cs[ts] => {{H1}} -> ... ->
+    {{Hk}} -> t[ts]`; renaming apart: every variable of the signature
+    other than the class parameters (the `bs` and those bound inside `t`,
+    e.g. a higher-rank `forall c`) is shifted above the largest `Alpha`
+    index of the instance type, so substituting `ts` captures nothing.
+    `NotAMethod` / `MissingMethod` (G-5 3, 4); bodies of an instance whose
+    head is not a class are skipped (already reported). Results (G-1 6):
+    records `TypedDefault` (method, class, type, typed clauses) and
+    `TypedInstance` (name, local instances `d1 ... dk`, superclass
+    dictionaries, typed defined methods with their types, omitted methods
+    filled by defaults) in `TCMonad.hs`; `inferTopDecls` returns
+    `[TypedDefault]` and `[TypedInstance]` (replacing the stage 3-B
+    superclass list); `Module.hs` ignores them until stage 5.
+    Tests: 57 examples, with four new `Nonexamples_Illtyped/Class*`
+    (`NotAMethod`, `MissingMethod`, ill-typed instance body, ill-typed
+    default). Checked by hand (scratch file): a default `(/=)` via
+    `(==)`, an instance body calling a sig-less `def` declared after it,
+    recursive `Eq (List a)` (`xs == ys` by `eqList`, `x == y` by the local
+    instance), `instance {{Eq x}} -> {{Eq y}} -> C (Pair x y)` with
+    `sig m : a -> b -> Pair a b` (a body that would type-check only if
+    `b` were captured by `y` is rejected) and a higher-rank method.
+    `Examples-Class`: `ClassTest` loads; `Eq`, `Ord`, `MultiParam`
+    type-check and stop at evaluation (no method / instance values until
+    stage 5); `Invertible` fails only at `t6` and type-checks with
+    `sig t6 : List Nat` (sample fix still TODO, stage 6); `Functor` does
+    not parse.
+  - Next: stage 5 (desugaring, evaluation, modules).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
