@@ -599,8 +599,9 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     expand synonyms at the top: a sig may hide `{{C}} -> t` in a synonym);
     C-1 at the entry of `checkTy` (exceptions: `Abs` starting with `{{p}}`,
     `Parens`, `Sig`); C-2 `alignPatsTy` with `Slot` (`Explicit` / `Inst` /
-    `Inserted`) and `expandSlots` (fresh inserted patterns per clause;
-    local instances registered for the body) used by `Abs` (Check),
+    `Inserted`) and `expandSlots` (inserted patterns, fresh per clause
+    [revised at stage 5: one variable per definition, shared by its
+    clauses, see C-2]; local instances registered for the body) used by `Abs` (Check),
     `checkTyPC`, `checkSigDefBody` and sig-less defs; C-3 `PInst` in
     `checkPatTyWork`; C-4 for `Abs` in Infer mode and the meta row; D-1
     rows (`Inst` checks `{{e}}` against the class with Omega; insertion
@@ -698,7 +699,47 @@ PROGRESS (2026-11-05): where the item-by-item review stands
     stage 5); `Invertible` fails only at `t6` and type-checks with
     `sig t6 : List Nat` (sample fix still TODO, stage 6); `Functor` does
     not parse.
-  - Next: stage 5 (desugaring, evaluation, modules).
+  - Stage 5 DONE (2026-11-07; details approved by the user the same day).
+    Names (`Name.hs`): `systemNameAt`, `dictName`, `superProjName` (moved
+    from `Instance.hs`), `defaultName`, and `isDictName` /
+    `isSuperProjName` / `isDefaultName`; `methodType` moved to
+    `TCMonad.hs` and `superProjType` added there, shared by typing and
+    desugaring. Typing also binds the projections and the defaults
+    (`defaultName m : tdType`) in the environment of the top level.
+    Desugaring (`desugarTopDecls` takes the own and all class tables,
+    `[TypedDefault]` and `[TypedInstance]`): a dictionary is the
+    constructor `<dict C>` applied to the superclass dictionaries and then
+    the methods in declaration order (H-4-2); each method and each
+    superclass projection of the module's own classes is
+    `\d -> case d of <dict C> x0 .. x(n-1) -> xi`; each default is a
+    top-level binding `<default m>` of its typed clauses; each instance is
+    `x = \d1 .. dk -> let self = <dict C> sups methods in self`, where a
+    defined method is its clauses applied to `d1 .. dk` and an omitted one
+    is `<default m> self`. Evaluation (`Value.hs`): `rnf` forces the
+    fields of a dictionary only to WHNF, and a dictionary prints as
+    `<dict C>` (G-2 3, approved the same day). Modules (H-4-5): the value
+    table of a module keeps, besides its own values, the imported values
+    of instances, projections and defaults (transitively), and
+    import / export lists never remove them (`isImplicitValueName`), since
+    inserted code refers to them without their names being in scope.
+    C-2 revised: inserted instance-pattern variables are shared by the
+    clauses of a definition (see C-2; found by `Invertible`).
+    Checked: `cabal test` (57 examples); scratch files: default `(/=)`,
+    superclass projection, `eqList`, a local instance preferred over the
+    global one, cyclic superclasses (load, evaluate, print `<dict A>`);
+    `Examples-Class`: `Eq` `t1` .. `t9`, `Ord` and `MultiParam` `t1` ..
+    `t6` give the expected values, `Invertible` `t1` .. `t9` (with
+    `sig t6 : List Nat`) forwards and backwards; modules: A (class with a
+    superclass and a default, a named and an unnamed instance), B
+    (imports A with a list without the instances or `eq`, exports a
+    list), C (imports only B) uses A's instances, the default and the
+    projection; D imports B with a list (the constructors from A, because
+    of the pre-existing re-export bug in TODO). Warnings (shown by
+    `cabal repl lib:sparcl`, since `cabal build` printed none after
+    touching files) compared per file with HEAD: the only new ones, three
+    unused imports in `Instance.hs` left by moving `superProjName` /
+    `superProjType`, were removed.
+  - Next: stage 6 (samples and tests, `Examples/`, CLAUDE.md).
 
 Implementation plan (approved 2026-11-05)
 -----------------------------------------
@@ -1209,7 +1250,20 @@ Abstraction insertion
   constructors]). By Renaming (iii) all
   clauses have `{{ }}` at the same positions, so the alignment is computed
   once from the first clause (as `numPatterns` now) and applied to all;
-  inserted variables are fresh per clause.
+  inserted variables are fresh per clause. [Revised at stage 5, approved
+  by the user 2026-11-07: the variable of an inserted pattern is
+  generated once per definition by `alignPatsTy` (`Inserted d c`) and
+  shared by all its clauses. Reason: desugaring (`desugarAlts`) groups
+  clauses whose non-invertible patterns are equal into one invertible
+  case (`RCase`); variables written by the user at the same position are
+  equal (renamed to `Alpha` names, compared by position), but fresh
+  inserted variables were not, so e.g. `Invertible.sparcl`'s
+  `rsucc (rev Nil) = ... | (rev Cons x xs) = ...` for `List a` became two
+  cases, the first always taken, and `fwd rsucc (Cons ...)` failed with a
+  pattern-match failure. Each clause binds the shared name in its own
+  scope, so sharing is safe. Alternative not taken: make `desugarAlts`
+  ignore variable names and rename per clause (more general, but needs
+  renaming in the typed body).]
   Trailing `InstFunTy` after the patterns are exhausted is left to C-1 in
   the body (plan (1)). Rejected: absorbing it in the clause, which would
   let `where`/`with` see it but rejects correct programs such as
@@ -1885,6 +1939,15 @@ every type variable of an instance occurring in its head.
        which top-level evaluation by `rec` (MonadFix, `Eval.hs:29-36`)
        probably handles -- to be confirmed in H-4. `SuperclassCycle` is
        removed from E-5.
+       [Stage 5 (2026-11-07): the evaluation by `rec` does handle it, but
+       two places this decision overlooked would loop on the cyclic
+       values: `rnf`, applied to every top-level value at module loading,
+       and printing in the REPL. Approved by the user 2026-11-07: `rnf` of
+       a dictionary constructor value (`isDictName`) forces its fields
+       only to WHNF, and a dictionary is printed as `<dict C>` without its
+       fields (`Value.hs`). Checked: `aNat` / `bNat` with `class A a
+       extends B a`, `class B a extends A a` load, methods through both
+       projections evaluate, and `aNat` prints `<dict A>`.]
     4. Each method sig: G-4 check, then the global type of B-5,
        `forall as bs. cs => {{C as}} -> t`, into `tcTyEnv` (e.g.
        `(==) : forall a. {{Eq a}} -> a -> a -> Bool`). For each
@@ -2038,7 +2101,8 @@ every type variable of an instance occurring in its head.
     over the lazy `Eval = Reader Int` (`Value.hs:24`); `Con` builds fields
     lazily and `App` forces only the function, so `dflt_neq eqNat` returns
     a closure without forcing `eqNat` (not run yet; confirm in H-4 with
-    the G-2 cycle case). Only a self-dependent non-function method (e.g.
+    the G-2 cycle case [confirmed at stage 5: the default `(/=)` and
+    recursive `Eq (List a)` evaluate; for the cycle case see G-2 3]). Only a self-dependent non-function method (e.g.
     `def mempty = mappend mempty mempty`) loops, like a self-dependent
     top-level `def`.
 
@@ -2115,6 +2179,8 @@ Remaining parts (H)
        computation, evaluated alike in both directions of `unlift`; a
        projected method is used in `rev` code like a global function
        (like `radd x y` with a static argument). To be confirmed after H-4.
+       [Confirmed at stage 5: `t1` .. `t9` give the expected values
+       forwards and backwards, with `sig t6 : List Nat` added.]
     5. `rev ({{C a}} -> t)` is not restricted, as `rev` of function types
        is not restricted now.
 - (H-4) Desugaring, split into H-4-1 expressions and patterns, H-4-2
@@ -2342,9 +2408,10 @@ TODO / known issues
   `tc'` (or run both in one `execTCWith`), also for the deferred REPL
   `eComp`. F-3 (b) does not depend on this.
 
-- Type checking and desugaring do not handle any of the new constructs
-  (`inferTopDecls` rejects classes and instances; incomplete-pattern
-  warnings in Desugar.hs). Renaming handles all of them.
+- [Done by stages 2 .. 5] Type checking and desugaring do not handle any
+  of the new constructs (`inferTopDecls` rejects classes and instances;
+  incomplete-pattern warnings in Desugar.hs). Renaming handles all of
+  them.
 - `Typing/Type.hs` (internal types) does not pretty-print `nameTyInstArr`.
 - Type-variable application (`f a`) is not supported by the type parser,
   which constructor classes such as `Functor` need.
@@ -2369,6 +2436,23 @@ TODO / known issues
 - Classes/instances across modules (B-4) are not exercised by any sample:
   add a multi-file sample (e.g. A defines a class and instances, B imports
   A with an import list, C imports only B) once type checking works.
+  [Checked by hand with scratch files at stage 5 (see PROGRESS); the
+  sample itself is for stage 6. Since `test/Spec.hs` loads each file of
+  `Examples/` from the repository root and modules are searched in the
+  current directory, the modules must be top-level files of `Examples/`
+  with distinct module names. Note: method names, not operators, in the
+  import / export lists (next item).]
+- (Pre-existing; found at stage 5) Operators cannot appear in import /
+  export lists: `module B ((/=)) where` is a parse error (`surfaceName`
+  in `Parser/Exp.hs` reads only `qconName` / `qvarName`).
+- (Pre-existing; found at stage 5) A re-exported name cannot be imported
+  through an import list: with `module P where data T = K`,
+  `module Q (T, K) where import P` and `module R where import Q (K)`,
+  `K` is unbound in `R`. `importNames` (`Module.hs`) turns each listed
+  name `n` into `Original Q n`, but `K` is `Original P K`, so
+  `restrictNames` removes it. (Importing without a list works.) Fix: look
+  the listed names up in the imported module's name table, as
+  `exportNames` does.
 - Add a sample for the C-2 limitation and its workaround once type checking
   works: a definition whose trailing instance argument is used from a
   `where` declaration (and one with `with`), e.g.
@@ -2384,9 +2468,12 @@ TODO / known issues
 - `Examples-Class/Invertible.sparcl`: `def t6 = bwd serialize (...)` is
   ambiguous (nothing fixes the `a` of `Serialize a`); add
   `sig t6 : List Nat` (found at stage 3-B).
-- Once type checking and desugaring work, run `Invertible.sparcl`'s
+- [Done at stage 5, with `sig t6 : List Nat` in a scratch copy] Once
+  type checking and desugaring work, run `Invertible.sparcl`'s
   `t1` .. `t9` forwards / backwards (H-3), e.g. `t1 = fwd twice (S Z)`
   should be `S (S (S Z))` and `t2 = bwd twice (S (S (S Z)))` `S Z`.
+  For stage 6, a test comparing values (like `Fib.sparcl` in
+  `test/Spec.hs`) would keep it checked.
 - [Partly done in stage 1: `Examples/HigherRankLetCase.sparcl` has `t1` /
   `t3`.] Remaining: a `case` whose scrutinee needs a trailing instance
   argument (after stage 3).
@@ -2398,6 +2485,13 @@ TODO / known issues
 - Add a sample with cyclic superclasses (G-2 (3)): declarations, global
   instances of both classes, and uses through a local instance; checks
   that search stops and that the mutually recursive dictionaries evaluate.
+  [Checked by hand at stage 5, including that loading (`rnf`) and
+  printing (`<dict A>`) stop; the sample is for stage 6.]
+- Add a sample with a definition whose clauses use invertible patterns
+  and have an inserted instance argument (the stage 5 revision of C-2),
+  e.g. `sig incAll : {{Inc a}} -> rev (List a) -o rev (List a)` with
+  clauses for `rev Nil` and `rev Cons x xs`, evaluated with `Cons` values
+  (forwards and backwards).
 - Add samples for the D-5 limitation once type checking works: `t1`
   (accepted) and `t2` (ill-typed, Nonexamples-style) of D-5, plus the
   workaround of `t2` with an annotation.
